@@ -104,3 +104,7 @@ Documented in MANUAL.md; a full Docker validation is described there too.
 ## Contributors
 
 **Muse Spark 1.3 High** — AI Coding Assistant & Implementation Contributor.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

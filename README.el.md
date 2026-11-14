@@ -127,3 +127,7 @@ cd frontend && npm test               # 9 δοκιμές vitest
 ## Συντελεστές
 
 **Muse Spark 1.3 High** — AI Coding Assistant & Implementation Contributor.
+
+## Άδεια
+
+MIT — δείτε το [LICENSE](LICENSE).
