@@ -1,0 +1,6 @@
+{"timestamp": "2024-11-01T08:00:01Z", "level": "info", "service": "api", "source": "web-1", "msg": "server started", "version": "1.4.2"}
+{"timestamp": "2024-11-01T08:02:44Z", "level": "warn", "service": "api", "source": "web-1", "msg": "slow query took 1240ms", "query_id": "7f3a"}
+{"timestamp": "2024-11-01T08:03:10Z", "level": "error", "service": "api", "source": "web-1", "msg": "connection refused to 10.0.0.5:5432", "retries": 3}
+{"timestamp": "2024-11-01T08:05:21Z", "severity": "INFO", "app": "worker", "logger": "worker-1", "message": "job finished", "job": "billing-run-42"}
+{"timestamp": "2024-11-01T08:07:33Z", "level": 50, "service": "worker", "source": "worker-1", "msg": "out of memory allocating 256MB"}
+{"timestamp": "2024-11-01T08:09:40Z", "level": "VERBOSE", "service": "api", "msg": "kept with UNKNOWN severity"}

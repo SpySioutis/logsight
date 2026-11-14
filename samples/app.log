@@ -1,0 +1,15 @@
+2024-11-01T08:00:01Z INFO service:api source:web-1 server started on :8000 version=1.4.2
+2024-11-01T08:00:12Z DEBUG service:api source:web-1 cache warmup finished keys=512
+2024-11-01T08:01:03Z INFO service:api source:web-1 GET /health 200 2ms
+2024-11-01T08:02:44Z WARN service:api source:web-1 slow query took 1240ms query_id=7f3a
+2024-11-01T08:03:10Z ERROR service:api source:web-1 connection refused to 10.0.0.5:5432 retries=3
+2024-11-01T08:03:55Z ERROR service:api source:web-2 connection refused to 10.0.0.9:5432 retries=7
+2024-11-01T08:05:21Z INFO service:worker source:worker-1 job finished job=billing-run-42 duration=31s
+2024-11-01T08:06:02Z WARNING service:worker source:worker-1 disk usage at 82% on /dev/sda1
+2024-11-01T08:07:33Z CRITICAL service:worker source:worker-1 out of memory allocating 256MB
+2024-11-01T08:08:14Z INFO service:api source:web-2 GET /api/logs 200 18ms user=u_9912
+2024-11-01T08:09:40Z TRACE service:api source:web-1 entering handler request_id=abc-123
+2024-11-01T08:10:05Z FATAL service:payments source:pay-1 payment gateway timeout after 30s order=88121
+May  1 08:11:00 syslog-ng[441]: accepted connection from 192.168.1.10
+2024-11-01T08:12:31Z DEBUG service:payments source:pay-1 retrying charge attempt=2 order=88121
+2024-11-01T08:13:00Z INFO service:payments source:pay-1 charge succeeded order=88121 amount=49.99

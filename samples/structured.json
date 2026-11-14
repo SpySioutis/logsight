@@ -1,0 +1,5 @@
+[
+  {"timestamp": "2024-11-01T09:00:00Z", "level": "INFO", "service": "api", "source": "web-1", "message": "deploy finished", "sha": "abc1234"},
+  {"timestamp": "2024-11-01T09:01:12Z", "level": "ERROR", "service": "api", "source": "web-1", "message": "payment gateway timeout after 30s", "order": 88121},
+  {"timestamp": "2024-11-01T09:02:30Z", "level": "ERROR", "service": "api", "source": "web-2", "message": "payment gateway timeout after 45s", "order": 88135}
+]

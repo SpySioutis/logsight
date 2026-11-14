@@ -1,0 +1,191 @@
+# LogSight Manual
+
+## 1. Project overview
+
+LogSight is a self-hosted log analysis platform. You upload application log
+files (plain text, JSON Lines or structured JSON) and then browse, search,
+filter and analyze them through a web UI backed by a FastAPI API and
+PostgreSQL 17. Three Docker services (`db`, `backend`, `frontend`) are
+orchestrated with Docker Compose.
+
+## 2. Prerequisites
+
+- Docker Engine 24+ with Docker Compose v2 (`docker compose version` must work).
+- 4 GB free RAM recommended; ~2 GB disk for images on first build.
+- Ports `8080` (UI) and `8000` (API) free, or override via `.env`.
+
+Check:
+
+```sh
+docker --version
+docker compose version
+```
+
+## 3. Required software
+
+Only Docker + Compose are required to run LogSight. For local development
+(without Docker) you additionally need Python 3.12+, `uv`, Node 22+ and npm —
+see §13.
+
+## 4. Installation
+
+```sh
+git clone <repository-url> logsight
+cd logsight
+```
+
+No other installation step is needed: images build from the repository.
+
+## 5. Environment configuration
+
+1. Copy the example file: `cp .env.example .env`
+2. Adjust values (all optional; defaults work out of the box):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | `logsight` | DB credentials (compose injects matching `DATABASE_URL` into the backend; the checked-in `DATABASE_URL` default is only for local dev) |
+| `BACKEND_PORT` | `8000` | host port publishing the API |
+| `FRONTEND_PORT` | `8080` | host port publishing the UI |
+| `MAX_UPLOAD_MB` | `100` | maximum import file size in megabytes |
+
+3. Never commit `.env`. It is covered by `.gitignore`.
+
+## 6. Database initialization
+
+PostgreSQL 17 runs in the `db` service with data persisted in the `pgdata`
+Docker volume. Schema is created by versioned SQL migrations, not by the ORM:
+
+- `backend/migrations/0001_initial.sql` — tables + indexes.
+- `backend/migrations/0002_trgm.sql` — `pg_trgm` extension + message trigram index.
+
+Migrations run automatically every time the backend container starts
+(`python -m app.migrate` before uvicorn); already-applied files are recorded
+in `schema_migrations` and skipped. To apply them manually against a running
+stack, see §11.
+
+## 7. Docker setup
+
+Services (`compose.yaml`):
+
+| Service | Image / build | Ports | Health |
+|---|---|---|---|
+| `db` | `postgres:17`, volume `pgdata` | internal 5432 | `pg_isready` |
+| `backend` | `Dockerfile` (uv + FastAPI) | `${BACKEND_PORT:-8000}:8000` | `GET /api/health` |
+| `frontend` | `frontend/Dockerfile` (nginx + static SPA, proxies `/api/` → backend) | `${FRONTEND_PORT:-8080}:80` | depends on backend |
+
+## 8. Automatic startup
+
+Use the script for your OS (works from any directory; scripts resolve the
+project root themselves):
+
+- Linux: `./start.sh`
+- macOS: `./start.command` (double-click in Finder, or run in Terminal)
+- Windows: `start.bat` (double-click, or run in a console)
+
+Each script checks Docker and Compose availability, prints a clear error if
+missing, then runs `docker compose up --build` and propagates its exit code.
+
+After startup:
+
+- UI: http://localhost:8080 (or your `FRONTEND_PORT`)
+- API docs: http://localhost:8000/api/docs (or your `BACKEND_PORT`)
+
+## 9. Manual startup
+
+```sh
+cd /path/to/logsight
+docker compose up --build          # foreground; Ctrl-C stops
+# or detached:
+docker compose up --build -d
+```
+
+## 10. How to stop the application
+
+- Foreground: `Ctrl-C`.
+- Detached: `docker compose down` (keeps the `pgdata` volume).
+- Full reset including data: `docker compose down -v` (deletes all imported logs).
+
+## 11. How to inspect logs
+
+```sh
+docker compose logs -f backend     # API logs
+docker compose logs -f frontend    # nginx access/error logs
+docker compose logs -f db          # postgres logs
+docker compose ps                  # service health overview
+```
+
+Manual migration run (backend container already built):
+
+```sh
+docker compose exec backend python -m app.migrate
+```
+
+## 12. How to run tests
+
+Backend (29 tests: severity, parsers, grouping + API integration on isolated SQLite):
+
+```sh
+cd backend
+uv sync
+uv run pytest -q
+```
+
+Frontend (9 vitest tests: severity/format utils, API param builder):
+
+```sh
+cd frontend
+npm install
+npm test
+npm run build   # also typechecks (vue-tsc) and produces dist/
+```
+
+Full-stack validation with Docker:
+
+```sh
+docker compose up --build -d
+curl -s http://localhost:8000/api/health
+# upload a sample and query it:
+curl -s -F "file=@samples/app.log" http://localhost:8000/api/imports/upload
+curl -s "http://localhost:8000/api/dashboard/summary"
+docker compose down
+```
+
+## 13. Development workflow
+
+- Backend without Docker: `cd backend && uv sync && uv run uvicorn app.main:app --reload`,
+  with Postgres reachable and `DATABASE_URL` exported
+  (default expects `postgresql+psycopg://logsight:logsight@localhost:5432/logsight`).
+- Frontend without Docker: `cd frontend && npm install && npm run dev`
+  (Vite proxies `/api` → `http://localhost:8000`).
+- Keep `MANUAL.md`, `AGENTS.md`, `README.md` and `.env.example` in sync with
+  every behavior/config change.
+
+## 14. Backup and restoration
+
+```sh
+docker compose exec db pg_dump -U logsight logsight > logsight-backup.sql
+cat logsight-backup.sql | docker compose exec -T db psql -U logsight -d logsight
+```
+
+## 15. Troubleshooting
+
+| Symptom | Cause / fix |
+|---|---|
+| `docker: command not found` | Install Docker Desktop (macOS/Windows) or docker engine (Linux). |
+| `permission denied` on the Docker socket (Linux) | Add your user to the `docker` group, then log out/in. |
+| Port already in use | Set `FRONTEND_PORT` / `BACKEND_PORT` in `.env`. |
+| Backend unhealthy / DB connection refused on first boot | Wait for the `db` healthcheck; check `docker compose logs db`. Migrations run before the API accepts traffic. |
+| `413 File exceeds the limit` on upload | Increase `MAX_UPLOAD_MB`, rebuild backend (`docker compose up --build backend`). |
+| `400 Unsupported file type` | Use `.log`, `.txt`, `.jsonl`, `.ndjson` or `.json`. |
+| Blank dashboard | No logs imported yet — upload a file in Sources / Imports (try `samples/app.log`). |
+| Frontend `Could not load…` errors | Backend unreachable: `curl http://localhost:8000/api/health`; check `docker compose ps`. |
+
+## 16. Security notes
+
+- Imported files are untrusted input: they are streamed to disk, parsed with
+  size caps, never executed, and errors are isolated per line.
+- Upload size, extension allowlist, and Pydantic input validation are enforced.
+- All queries use SQLAlchemy parameter binding. No secrets are baked into
+  images; credentials come from environment. Keep `.env` out of Git.
+- This version has no authentication: do not expose it to untrusted networks
+  without your own access control in front of it.

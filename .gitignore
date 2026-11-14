@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+backend/.venv/
+.venv/
+.uv/
+uv.lock.bak
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+*.local
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Databases / local data
+pgdata/
+*.db
+*.sqlite*
+
+# Uploads / temp
+backend/uploads/
+tmp/
+*.log.orig
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*.swo
+
+# Docker
+.docker/
+
+# Test / coverage
+.coverage
+htmlcov/
+.pytest_cache/
+frontend/coverage/
+*.test.ts.snap
