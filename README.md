@@ -1,5 +1,7 @@
 # LogSight
 
+[🇬🇷 Διαβάστε το στα Ελληνικά](README.el.md)
+
 A modern, self-hosted log analysis platform for searching, filtering, monitoring and understanding application logs.
 
 Import log files, browse and inspect entries, search with combined filters, track error groups, and review dashboard statistics — all computed from your real stored data.
