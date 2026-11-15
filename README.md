@@ -28,9 +28,9 @@ See [MANUAL.md](MANUAL.md) for manual startup, configuration, migrations, testin
 - **Severity normalization** — TRACE / DEBUG / INFO / WARN / WARNING / ERROR / FATAL / CRITICAL / UNKNOWN. Aliases (`warn`, `err`, `crit`, numeric levels…) are normalized; unknown values become UNKNOWN and are never discarded.
 - **Dashboard** — totals, errors, warnings, criticals, logs over time, severity distribution, most active sources, most frequent errors (muted groups excluded). Empty states when nothing is imported.
 - **Error analysis** — deterministic fingerprint grouping (masks IPs, UUIDs, numbers, hex ids), counts, first/last occurrence, per-group trend sparkline, lifecycle status (open/acknowledged/resolved/muted) with assignee and note, drill-down to matching entries.
-- **Trace correlation** — `trace_id` / `request_id` extracted at import; trace timeline view across services with duration, services and severities.
+- **Trace correlation** — `trace_id` / `request_id` extracted at import; traces overview page plus a per-trace waterfall timeline across services with duration, services and severities.
 - **Saved filters** — create, edit, delete and re-apply search presets.
-- **Dark developer UI** — dense, minimal Vue 3 + TypeScript SPA (light theme optional in Settings).
+- **Modern observability UI** — dark-first Vue 3 + TypeScript SPA with collapsible sidebar navigation, KPI dashboard, smooth charts, loading skeletons and full light-theme support.
 
 ## Technology stack
 

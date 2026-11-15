@@ -1,64 +1,64 @@
 <template>
-  <div class="page-head">
-    <h1>Error Analysis</h1>
-    <span class="sub">recurring problems, grouped deterministically by message shape</span>
-    <span class="spacer" style="flex: 1"></span>
-    <label class="field" style="flex-direction: row; align-items: center">
-      Status
-      <select v-model="statusFilter" @change="reload">
-        <option value="">All</option>
-        <option value="open">Open</option>
-        <option value="acknowledged">Acknowledged</option>
-        <option value="resolved">Resolved</option>
-        <option value="muted">Muted</option>
-      </select>
-    </label>
-  </div>
+  <PageHeader title="Errors" subtitle="Recurring problems, grouped deterministically by message shape">
+    <template #actions>
+      <div class="segmented" role="tablist" aria-label="Status filter">
+        <button :class="{ active: statusFilter === '' }" @click="statusFilter = ''; reload()">All</button>
+        <button :class="{ active: statusFilter === 'open' }" @click="statusFilter = 'open'; reload()">Open</button>
+        <button :class="{ active: statusFilter === 'acknowledged' }" @click="statusFilter = 'acknowledged'; reload()">Acked</button>
+        <button :class="{ active: statusFilter === 'resolved' }" @click="statusFilter = 'resolved'; reload()">Resolved</button>
+        <button :class="{ active: statusFilter === 'muted' }" @click="statusFilter = 'muted'; reload()">Muted</button>
+      </div>
+      <span v-if="!loading" class="chip chip-mono">{{ formatNumber(groups.length) }} groups</span>
+    </template>
+  </PageHeader>
 
-  <div v-if="error" class="alert">{{ error }}</div>
+  <div v-if="error" class="alert"><AppIcon name="alert-circle" :size="16" />{{ error }}</div>
 
   <div class="panel">
-    <div v-if="loading" class="dim">Loading…</div>
+    <TableSkeleton v-if="loading" :rows="6" />
     <template v-else-if="groups.length">
-      <table class="grid">
-        <thead>
-          <tr>
-            <th>Representative message</th>
-            <th style="width: 90px">Severity</th>
-            <th style="width: 120px">Status</th>
-            <th style="width: 90px; text-align: right">Count</th>
-            <th style="width: 130px">Sources</th>
-            <th style="width: 170px">Last seen</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="g in groups"
-            :key="g.fingerprint"
-            class="rowlink"
-            @click="openGroup(g)"
-          >
-            <td class="mono ellipsis" :title="g.sample">{{ truncate(firstLine(g.sample), 140) }}</td>
-            <td><SeverityBadge :severity="g.severity" /></td>
-            <td><span :class="['status', g.status]">{{ g.status }}</span></td>
-            <td class="mono" style="text-align: right">{{ formatNumber(g.count) }}×</td>
-            <td class="dim">{{ g.sources.slice(0, 2).join(', ') || '—' }}{{ g.sources.length > 2 ? ` +${g.sources.length - 2}` : '' }}</td>
-            <td class="mono dim nowrap">{{ formatDateTime(g.last_seen) }}</td>
-          </tr>
-        </tbody>
-      </table>
+      <div class="table-wrap">
+        <table class="grid fixed">
+          <thead>
+            <tr>
+              <th>Representative message</th>
+              <th style="width: 110px">Severity</th>
+              <th style="width: 140px">Status</th>
+              <th style="width: 96px; text-align: right">Count</th>
+              <th style="width: 150px">Sources</th>
+              <th style="width: 172px">Last seen</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="g in groups"
+              :key="g.fingerprint"
+              class="rowlink"
+              :class="{ 'row-active': activeGroup?.fingerprint === g.fingerprint }"
+              @click="openGroup(g)"
+            >
+              <td class="mono ellipsis" :title="g.sample" style="font-size: 12.5px">{{ truncate(firstLine(g.sample), 140) }}</td>
+              <td><SeverityBadge :severity="g.severity" /></td>
+              <td><StatusBadge :status="g.status" /></td>
+              <td class="mono" style="text-align: right; font-weight: 700; color: var(--danger)">{{ formatNumber(g.count) }}×</td>
+              <td class="dim" style="font-size: 12.5px">{{ g.sources.slice(0, 2).join(', ') || '—' }}{{ g.sources.length > 2 ? ` +${g.sources.length - 2}` : '' }}</td>
+              <td class="mono dim nowrap" style="font-size: 12px">{{ formatDateTime(g.last_seen) }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </template>
-    <EmptyState v-else title="No error groups" hint="Error, fatal and critical entries are grouped here once logs are imported." />
+    <EmptyState v-else title="No error groups" icon="check-circle" hint="Error, fatal and critical entries are grouped here once logs are imported." />
   </div>
 
-  <div v-if="activeGroup" class="panel">
+  <div v-if="activeGroup" class="panel rise">
     <div class="toolbar">
-      <h2 style="margin: 0">Matching entries · {{ formatNumber(groupPage?.total ?? 0) }}</h2>
+      <SeverityBadge :severity="activeGroup.severity" />
+      <strong style="font-size: 14px">Matching entries · {{ formatNumber(groupPage?.total ?? 0) }}</strong>
+      <span class="mono faint" style="font-size: 11.5px" :title="activeGroup.fingerprint">fp:{{ truncate(activeGroup.fingerprint, 12) }}</span>
       <span class="spacer"></span>
-      <RouterLink :to="{ path: '/logs', query: {} }" @click.prevent="goToExplorer">
-        <button>Open in Explorer</button>
-      </RouterLink>
-      <button @click="closeGroup">Close</button>
+      <button class="sm" @click="goToExplorer"><AppIcon name="logs" :size="14" /> Open in Explorer</button>
+      <button class="sm ghost" @click="closeGroup"><AppIcon name="x" :size="14" /> Close</button>
     </div>
 
     <div class="filterbar">
@@ -79,13 +79,15 @@
         Note
         <input v-model="stateForm.note" type="text" placeholder="optional" />
       </label>
-      <button class="primary" :disabled="saving" @click="saveState">{{ saving ? 'Saving…' : 'Save' }}</button>
+      <button class="primary sm" style="align-self: flex-end" :disabled="saving" @click="saveState">
+        <AppIcon name="check" :size="14" /> {{ saving ? 'Saving…' : 'Save' }}
+      </button>
       <div v-if="trend.length" class="field">
-        <span style="font-size: 12px; color: var(--text-dim)">Last {{ trend.length }} days</span>
+        <span style="font-size: 12px; color: var(--text-2); font-weight: 550">Last {{ trend.length }} days</span>
         <TrendSpark :points="trend" />
       </div>
     </div>
-    <div v-if="stateNotice" class="notice">{{ stateNotice }}</div>
+    <div v-if="stateNotice" class="notice"><AppIcon name="check-circle" :size="16" />{{ stateNotice }}</div>
 
     <div v-if="groupPage && groupPage.items.length">
       <LogTable :entries="groupPage.items" sort="timestamp" direction="desc" @select="selected = $event" @sort="() => {}" />
@@ -98,14 +100,18 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
-import { RouterLink, useRouter } from 'vue-router'
+import { useRouter } from 'vue-router'
 import { api, type ErrorGroup, type ErrorTrendPoint, type LogEntry, type LogPage } from '../api/client'
 import { formatDateTime, formatNumber, truncate } from '../utils/format'
+import AppIcon from '../components/AppIcon.vue'
 import EmptyState from '../components/EmptyState.vue'
 import LogDetails from '../components/LogDetails.vue'
 import LogTable from '../components/LogTable.vue'
+import PageHeader from '../components/PageHeader.vue'
 import Pagination from '../components/Pagination.vue'
 import SeverityBadge from '../components/SeverityBadge.vue'
+import StatusBadge from '../components/StatusBadge.vue'
+import TableSkeleton from '../components/TableSkeleton.vue'
 import TrendSpark from '../components/TrendSpark.vue'
 
 const router = useRouter()
@@ -207,24 +213,10 @@ onMounted(reload)
 </script>
 
 <style scoped>
-.status {
-  font-size: 12px;
-  padding: 2px 8px;
-  border-radius: 10px;
-  background: var(--bg-sunken);
-  color: var(--text-dim);
+.row-active td {
+  background: var(--accent-soft) !important;
 }
-.status.open {
-  color: var(--danger);
-}
-.status.acknowledged {
-  color: var(--warn);
-}
-.status.resolved {
-  color: var(--ok);
-}
-.status.muted {
-  color: var(--text-dim);
-  text-decoration: line-through;
+.row-active td:first-child {
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 </style>

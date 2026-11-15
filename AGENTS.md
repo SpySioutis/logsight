@@ -38,9 +38,10 @@ frontend/
     api/client.ts      # axios instance + types + toParams()
     utils/             # severity.ts, format.ts, highlight.ts (+ vitest files)
     stores/settings.ts # Pinia: theme + page size (localStorage)
-    components/        # SeverityBadge, FilterBar, LogTable, LogDetails,
-                       # Pagination, StatCard, TimeChart, TrendSpark, EmptyState
-    views/             # Dashboard, Explorer, Errors, Imports, SavedFilters, Settings, TraceView
+    components/        # AppIcon, SeverityBadge, StatusBadge, FilterBar, LogTable,
+                       # LogDetails, Pagination, StatCard, TimeChart, TrendSpark,
+                       # EmptyState, PageHeader, TableSkeleton
+    views/             # Dashboard, Explorer, Errors, Traces, Imports, SavedFilters, Settings, TraceView
     router/index.ts
 samples/               # app.log, app.jsonl, structured.json, events.csv,
                        # syslog.log, trace.jsonl (manual testing)

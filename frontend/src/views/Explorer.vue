@@ -1,23 +1,38 @@
 <template>
-  <div class="page-head">
-    <h1>Log Explorer</h1>
-    <span class="sub" v-if="page"> {{ formatNumber(page.total) }} entries match </span>
-    <span class="spacer" style="flex: 1"></span>
-    <input
-      v-model="saveName"
-      type="text"
-      placeholder="Save current filter as…"
-      style="width: 220px"
-      @keyup.enter="saveCurrentFilter"
-    />
-    <button :disabled="!saveName.trim()" @click="saveCurrentFilter">Save filter</button>
-  </div>
+  <PageHeader title="Log Explorer">
+    <template #subtitle>
+      <template v-if="page">{{ formatNumber(page.total) }} entries match</template>
+      <template v-else>Search and filter every stored log entry</template>
+    </template>
+    <template #actions>
+      <input
+        v-model="saveName"
+        type="text"
+        placeholder="Save current filter as…"
+        style="width: 210px"
+        @keyup.enter="saveCurrentFilter"
+      />
+      <button class="subtle sm" :disabled="!saveName.trim()" @click="saveCurrentFilter">
+        <AppIcon name="filters" :size="14" /> Save filter
+      </button>
+    </template>
+  </PageHeader>
 
-  <div v-if="error" class="alert">{{ error }}</div>
-  <div v-if="savedNotice" class="notice">{{ savedNotice }}</div>
+  <div v-if="error" class="alert"><AppIcon name="alert-circle" :size="16" />{{ error }}</div>
+  <div v-if="savedNotice" class="notice"><AppIcon name="check-circle" :size="16" />{{ savedNotice }}</div>
 
   <div class="panel">
-    <FilterBar v-model="query" :sources="facets.sources" :services="facets.services" @clear="resetQuery" />
+    <FilterBar :model-value="query" :sources="facets.sources" :services="facets.services" @update:model-value="onQueryUpdate" @clear="resetQuery" />
+
+    <div class="active-chips">
+      <span v-for="chip in activeChips" :key="chip.key" class="chip chip-accent">
+        {{ chip.label }}
+        <button :title="`Remove ${chip.label}`" @click="chip.remove()">
+          <AppIcon name="x" :size="12" />
+        </button>
+      </span>
+    </div>
+
     <div class="toolbar">
       <label class="field" style="flex-direction: row; align-items: center">
         Sort
@@ -39,30 +54,35 @@
           <option :value="100">100</option>
         </select>
       </label>
+      <span class="spacer"></span>
+      <span v-if="loading" class="dim" style="font-size: 12.5px">Loading…</span>
     </div>
 
-    <div v-if="loading" class="dim">Loading…</div>
+    <TableSkeleton v-if="loading && !page" :rows="8" />
     <template v-else-if="page && page.items.length">
       <LogTable :entries="page.items" :sort="query.sort ?? 'timestamp'" :direction="query.direction ?? 'desc'" @select="selected = $event" @sort="onHeaderSort" />
       <Pagination :page="page.page" :pages="page.pages" :total="page.total" @change="goToPage" />
     </template>
-    <EmptyState v-else title="No entries match" hint="Adjust the search text, severity toggles or date range." />
+    <EmptyState v-else title="No entries match" icon="search" hint="Adjust the search text, severity toggles or date range." />
   </div>
 
   <LogDetails :entry="selected" @close="selected = null" />
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api, toParams, type LogEntry, type LogPage, type LogQuery } from '../api/client'
 import { useSettingsStore } from '../stores/settings'
-import { formatNumber } from '../utils/format'
+import { formatNumber, truncate } from '../utils/format'
+import AppIcon from '../components/AppIcon.vue'
+import EmptyState from '../components/EmptyState.vue'
 import FilterBar from '../components/FilterBar.vue'
 import LogDetails from '../components/LogDetails.vue'
 import LogTable from '../components/LogTable.vue'
+import PageHeader from '../components/PageHeader.vue'
 import Pagination from '../components/Pagination.vue'
-import EmptyState from '../components/EmptyState.vue'
+import TableSkeleton from '../components/TableSkeleton.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -103,7 +123,38 @@ const facets = ref<{ severities: string[]; sources: string[]; services: string[]
   services: [],
 })
 
+interface Chip {
+  key: string
+  label: string
+  remove: () => void
+}
+
+const activeChips = computed<Chip[]>(() => {
+  const chips: Chip[] = []
+  if (query.q) chips.push({ key: 'q', label: `“${truncate(query.q, 32)}”`, remove: () => (query.q = undefined) })
+  for (const sev of query.severity ?? []) {
+    chips.push({
+      key: `sev-${sev}`,
+      label: sev,
+      remove: () => (query.severity = (query.severity ?? []).filter((s) => s !== sev)),
+    })
+  }
+  if (query.source) chips.push({ key: 'source', label: `source:${truncate(query.source, 24)}`, remove: () => (query.source = undefined) })
+  if (query.service) chips.push({ key: 'service', label: `service:${truncate(query.service, 24)}`, remove: () => (query.service = undefined) })
+  if (query.trace_id) chips.push({ key: 'trace', label: `trace:${truncate(query.trace_id, 16)}`, remove: () => (query.trace_id = undefined) })
+  if (query.request_id) chips.push({ key: 'req', label: `request:${truncate(query.request_id, 16)}`, remove: () => (query.request_id = undefined) })
+  if (query.import_id) chips.push({ key: 'import', label: `import:${truncate(query.import_id, 8)}`, remove: () => (query.import_id = undefined) })
+  if (query.date_from) chips.push({ key: 'from', label: `from ${query.date_from}`, remove: () => (query.date_from = undefined) })
+  if (query.date_to) chips.push({ key: 'to', label: `to ${query.date_to}`, remove: () => (query.date_to = undefined) })
+  return chips
+})
+
 let timer: number | undefined
+
+/** Merge child updates into the reactive query in place (never replace it). */
+function onQueryUpdate(next: LogQuery) {
+  Object.assign(query, next)
+}
 
 async function load() {
   loading.value = true
@@ -193,7 +244,7 @@ async function saveCurrentFilter() {
     savedNotice.value = `Filter "${name}" saved.`
     saveName.value = ''
     setTimeout(() => (savedNotice.value = ''), 3000)
-  } catch (e: unknown) {
+  } catch {
     savedNotice.value = 'Could not save: a filter with this name may already exist.'
   }
 }

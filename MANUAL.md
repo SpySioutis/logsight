@@ -189,7 +189,7 @@ cat logsight-backup.sql | docker compose exec -T db psql -U logsight -d logsight
 | `413 File exceeds the limit` on upload | Increase `MAX_UPLOAD_MB`, rebuild backend (`docker compose up --build backend`). The same cap applies to decompressed `.gz` / `.zip` output. |
 | `400 Unsupported file type` | Use `.log`, `.txt`, `.jsonl`, `.ndjson`, `.json`, `.csv`, `.gz` or `.zip`. |
 | `422` on a `.zip` upload | The archive holds no supported log files, or a member is corrupt — check the `detail` message. |
-| Blank dashboard | No logs imported yet — upload a file in Sources / Imports (try `samples/app.log`). |
+| Blank dashboard | No logs imported yet — upload a file in Imports (try `samples/app.log`). |
 | Frontend `Could not load…` errors | Backend unreachable: `curl http://localhost:8000/api/health`; check `docker compose ps`. |
 
 ## 16. Security notes

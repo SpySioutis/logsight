@@ -88,14 +88,15 @@ logsight/
 │   ├── src/
 │   │   ├── api/client.ts      # axios instance, all shared TS interfaces, toParams()
 │   │   ├── utils/             # severity.ts, format.ts, highlight.ts (+ *.test.ts, 12 tests)
-│   │   ├── stores/settings.ts # Pinia: theme + pageSize, persisted to localStorage
-│   │   ├── assets/styles.css  # ALL styling: dark theme CSS variables, no component libs
-│   │   ├── components/        # SeverityBadge, FilterBar, LogTable, LogDetails,
-│   │   │                      # Pagination, StatCard, TimeChart, TrendSpark, EmptyState
-│   │   ├── views/             # Dashboard, Explorer, Errors, Imports, SavedFilters,
+│   │   ├── stores/settings.ts # Pinia: theme + pageSize + sidebar, persisted to localStorage
+│   │   ├── assets/styles.css  # design system: dark-first tokens, light theme, all components
+│   │   ├── components/        # AppIcon (inline Lucide set), SeverityBadge, StatusBadge,
+│   │   │                      # FilterBar, LogTable, LogDetails, Pagination, StatCard,
+│   │   │                      # TimeChart, TrendSpark, EmptyState, PageHeader, TableSkeleton
+│   │   ├── views/             # Dashboard, Explorer, Errors, Traces, Imports, SavedFilters,
 │   │   │                      # Settings, TraceView
-│   │   ├── router/index.ts    # /, /logs, /errors, /imports, /filters, /settings, /traces/:id
-│   │   ├── App.vue            # sidebar shell + <RouterView/>
+│   │   ├── router/index.ts    # /, /logs, /errors, /traces, /imports, /filters, /settings, /traces/:id
+│   │   ├── App.vue            # shell: collapsible sidebar + topbar + <RouterView/>
 │   │   └── main.ts            # app bootstrap (pinia, router)
 │   ├── nginx.conf             # /api/ proxy + SPA fallback
 │   └── package.json           # dev/build/test scripts (vue-tsc typecheck in build)
@@ -199,34 +200,43 @@ with a helpful message, never 500. Pydantic `Literal` mismatches → 422.
 
 - **Stack**: Vue 3 + TypeScript + Vite + Pinia + Vue Router, axios only.
   No UI framework; all styling is hand-written CSS in
-  `assets/styles.css` using variables (`--bg`, `--text`, `--accent`,
-  `--danger`, `--warn`, `--ok`, …). Dark theme default, light via
-  `data-theme="light"`. Dense developer-console aesthetic: no animation,
-  no emoji, compact tables (`.grid`), drawers, filter bars.
+  `assets/styles.css` (design tokens `--bg-*`, `--text-*`, `--accent`,
+  `--danger`, `--warning`, `--success`, …). Dark-first premium theme,
+  light via `data-theme="light"`. Icons are inline Lucide-style SVGs
+  (`AppIcon.vue`, no extra dependency). No emoji.
 - **Conventions**: `<script setup lang="ts">` everywhere; all shared
   types + `toParams()` in `api/client.ts`; axios `baseURL` is `/api`
   (nginx proxies) unless `VITE_API_BASE_URL` is set. `npm run build`
   runs `vue-tsc --noEmit` first — type errors fail the Docker build.
+  Never `v-model` a `reactive()` root (replaces the object); mutate
+  in place via `Object.assign` (see `Explorer.vue:onQueryUpdate`).
 - **Views**:
-  - `Dashboard.vue`: stat cards + `TimeChart` (day/hour toggle) + three
-    breakdown panels; `EmptyState` when total is 0.
-  - `Explorer.vue`: `FilterBar` (debounced 350 ms, syncs URL query) +
-    sort/per-page toolbar + `LogTable` + `Pagination` + `LogDetails`
-    drawer + save-filter box. Reads `trace_id`/`request_id` from route.
-  - `Errors.vue`: status filter + groups table (severity/status badges)
-    + detail panel with lifecycle editor, `TrendSpark`, entries table.
+  - `Dashboard.vue`: KPI stat cards + smooth `TimeChart` area chart
+    (day/hour toggle) + clickable severity/source/error breakdown
+    panels; `EmptyState` when total is 0.
+  - `Explorer.vue`: full-width search `FilterBar` (debounced 350 ms,
+    syncs URL query) + active-filter chips + sort/per-page toolbar +
+    `LogTable` + `Pagination` + `LogDetails` drawer + save-filter box.
+    Reads `trace_id`/`request_id`/`import_id` from route.
+  - `Errors.vue`: status segmented filter + groups table
+    (severity/status badges) + detail panel with lifecycle editor,
+    `TrendSpark`, entries table.
+  - `Traces.vue` (`/traces`, sidebar entry): recent-trace list with
+    jump-to-ID box; links to detail.
   - `Imports.vue`: drag-and-drop upload with progress, import history
     with view/delete. Accept list must match the backend allowlist.
-  - `TraceView.vue` (`/traces/:id`): summary stats + timeline table.
-    Reached via links only (no sidebar entry).
+  - `TraceView.vue` (`/traces/:id`): KPI stats + service waterfall
+    timeline with time axis + `LogDetails` drawer.
   - `SavedFilters.vue`: CRUD around `FilterBar`; `describe()` renders a
     human-readable criteria line — extend it when adding filter fields.
-  - `Settings.vue`: theme + page size (Pinia + localStorage).
+  - `Settings.vue`: theme + sidebar + page size (Pinia + localStorage),
+    backend health, API docs link.
 - **Components**: `LogTable` renders `entry.snippet` via `v-html` after
   `sanitizeSnippet()` (in `utils/highlight.ts`: strips every tag except
   `<mark>`), shows first line of multiline messages + `trace:` chip link;
   `LogDetails` drawer links trace/request ids to `/traces/:id`;
-  `TrendSpark` is a dependency-free SVG polyline.
+  `TimeChart` is a dependency-free smooth SVG area chart with hover
+  crosshair; `TrendSpark` is a dependency-free SVG area sparkline.
 - **Tests**: 12 vitest tests (`client.test.ts`, `severity.test.ts`,
   `format.test.ts`, `highlight.test.ts`). Node ≥22 required
   (`nvm use 22` — system node may be ancient).
