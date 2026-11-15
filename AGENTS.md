@@ -148,4 +148,4 @@ Never claim tests pass without running them in-session.
 Changing frameworks/database, adding background workers or auth, replacing
 deterministic grouping with AI/semantic clustering, editing applied
 migrations, restructuring services. Keep docs (`README.md`, `README.el.md`,
-`MANUAL.md`, `AGENTS.md`, `.env.example`) synchronized with every change.
+`MANUAL.md`, `AGENTS.md`, `LLM.md`, `.env.example`) synchronized with every change.
