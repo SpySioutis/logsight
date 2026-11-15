@@ -23,7 +23,7 @@ See [MANUAL.md](MANUAL.md) for manual startup, configuration, migrations, testin
 
 ## Features
 
-- **Log import** — plain text (`.log`, `.txt`, incl. RFC 5424 syslog and multiline stacktraces), JSON Lines (`.jsonl`, `.ndjson`), structured JSON (`.json`) and CSV (`.csv`); gzip (`.gz`) and bundles (`.zip`) accepted; streaming parse, batch inserts, 1 GB default limit (raw + decompressed), progress display, duplicate detection by content hash, import history.
+- **Log import** — plain text (`.log`, `.txt`, incl. RFC 5424 syslog and multiline stacktraces), JSON Lines (`.jsonl`, `.ndjson`), structured JSON (`.json`) and CSV (`.csv`); gzip (`.gz`) and bundles (`.zip`) accepted; streaming parse, PostgreSQL COPY bulk load, 1 GB default limit (raw + decompressed), live progress percentage, duplicate detection by content hash, import history.
 - **Log explorer** — server-side pagination, sorting (incl. relevance ranking), full-text search with operators (`"exact phrase"`, `-exclude`, `service:`, `source:`, `severity:`, `trace:`, `request:`), highlighted snippets, date-range, severity, source, service, trace and request filters (combinable), log details drawer with copy-to-clipboard and trace links.
 - **Severity normalization** — TRACE / DEBUG / INFO / WARN / WARNING / ERROR / FATAL / CRITICAL / UNKNOWN. Aliases (`warn`, `err`, `crit`, numeric levels…) are normalized; unknown values become UNKNOWN and are never discarded.
 - **Dashboard** — totals, errors, warnings, criticals, logs over time, severity distribution, most active sources, most frequent errors (muted groups excluded). Empty states when nothing is imported.

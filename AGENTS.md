@@ -12,7 +12,8 @@ Three Docker Compose services (`compose.yaml` at repo root):
   :80, `/api/` reverse-proxied to `backend:8000`, SPA fallback).
 
 No background workers: imports are processed synchronously in the upload
-request (streamed to temp file, parsed, batch-inserted with 1000-row commits).
+request (streamed to temp file, parsed, bulk-loaded via PostgreSQL COPY in
+5000-row batches; SQLite fallback uses executemany inserts).
 
 ## Directory structure
 
@@ -28,7 +29,7 @@ backend/
     parsers.py         # streaming plaintext (+syslog/multiline) / JSONL / JSON / CSV parsers
     grouping.py        # deterministic error fingerprinting
     search.py          # q-language parser, ILIKE fallback, snippet highlighting
-    import_service.py  # upload → temp file + hash → parse (+gzip/zip) → batch insert
+    import_service.py  # upload → temp file + hash → parse (+gzip/zip) → COPY bulk load + progress heartbeats
     migrate.py         # applies backend/migrations/*.sql once each
     routers/           # health, imports, logs, dashboard, errors, filters, traces
   migrations/0001_initial.sql … 0005_error_states.sql

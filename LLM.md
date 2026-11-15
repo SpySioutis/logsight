@@ -168,8 +168,17 @@ logsight/
   gunzip-to-temp with decompressed cap (zip-bomb guard);
   `.zip` → per-member format detection, skips dotfiles/dirs/unsupported,
   422 if no supported members; `_Parser` accumulates `ParsedEntry`s and
-  flushes every 1000 rows. `total_lines` counts physical lines,
+  flushes every 5000 rows via PostgreSQL `COPY FROM STDIN` (CSV buffer;
+  `created_at` set explicitly per batch; `SET LOCAL synchronous_commit
+  TO OFF` per bulk transaction; SQLite tests use the executemany
+  fallback). Fingerprints are computed only for error-like severities
+  (60% of parse CPU otherwise; `NULL` for the rest).
+  `total_lines` counts physical lines,
   `parsed_count` logical entries (multiline joining reduces the latter).
+  For live progress, the total-line estimate (fast newline count, committed
+  upfront; 0 = unknown, e.g. single-doc JSON) and per-batch `parsed_count`
+  heartbeats are committed during the parse, so polling `GET /imports`
+  sees percent-complete while `status` is `"processing"`.
 - **`migrate.py`**: applies `migrations/*.sql` in filename order inside
   one transaction per file, records versions in `schema_migrations`.
   Idempotent; safe to run every boot.

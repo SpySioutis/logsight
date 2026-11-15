@@ -21,10 +21,25 @@
     >
       <template v-if="uploading">
         <div class="dz-icon"><AppIcon name="imports" :size="25" /></div>
-        <div class="dz-title">Uploading {{ uploadName }}… {{ uploadPct }}%</div>
-        <div class="progress-track" style="max-width: 420px; margin: 14px auto 0">
-          <div class="progress-fill" :style="{ width: `${uploadPct}%` }"></div>
-        </div>
+        <template v-if="uploadPct < 100">
+          <div class="dz-title">Uploading {{ uploadName }}… {{ uploadPct }}%</div>
+          <div class="progress-track" style="max-width: 420px; margin: 14px auto 0">
+            <div class="progress-fill" :style="{ width: `${uploadPct}%` }"></div>
+          </div>
+        </template>
+        <template v-else-if="ownPct !== null">
+          <div class="dz-title">Parsing {{ uploadName }}… {{ ownPct }}%</div>
+          <div class="dz-sub">{{ formatNumber(ownParsed) }} of {{ formatNumber(ownTotal) }} lines</div>
+          <div class="progress-track" style="max-width: 420px; margin: 14px auto 0">
+            <div class="progress-fill" :style="{ width: `${ownPct}%` }"></div>
+          </div>
+        </template>
+        <template v-else>
+          <div class="dz-title">Upload received — starting parse…</div>
+          <div class="progress-track" style="max-width: 420px; margin: 14px auto 0">
+            <div class="progress-fill indeterminate"></div>
+          </div>
+        </template>
       </template>
       <template v-else>
         <div class="dz-icon"><AppIcon name="imports" :size="25" /></div>
@@ -51,7 +66,7 @@
     <div class="chart-card-head" style="margin-bottom: 10px">
       <h2 style="margin: 0"><span class="h2-icon"><AppIcon name="history" :size="15" /></span> Import history</h2>
       <span class="spacer"></span>
-      <button class="sm ghost" title="Refresh history" @click="refresh"><AppIcon name="refresh" :size="14" /> Refresh</button>
+      <button class="sm ghost" title="Refresh history" @click="() => refresh()"><AppIcon name="refresh" :size="14" /> Refresh</button>
     </div>
     <TableSkeleton v-if="loading" :rows="5" />
     <template v-else-if="imports.length">
@@ -61,7 +76,7 @@
             <tr>
               <th>File</th>
               <th style="width: 90px">Format</th>
-              <th style="width: 120px">Status</th>
+              <th style="width: 150px">Status</th>
               <th style="width: 110px; text-align: right">Parsed</th>
               <th style="width: 120px; text-align: right">Skipped</th>
               <th style="width: 172px">Imported at</th>
@@ -76,7 +91,24 @@
               </td>
               <td><span class="chip chip-mono">{{ imp.format }}</span></td>
               <td>
-                <span :class="['import-status', imp.status]" :title="imp.error_message ?? imp.status">{{ imp.status }}</span>
+                <template v-if="imp.status === 'processing'">
+                  <span class="import-status processing">
+                    processing<template v-if="progressPct(imp) !== null"> · {{ progressPct(imp) }}%</template>
+                  </span>
+                  <div class="progress-track mini" :title="progressTitle(imp)">
+                    <div v-if="progressPct(imp) !== null" class="progress-fill" :style="{ width: `${progressPct(imp)}%` }"></div>
+                    <div v-else class="progress-fill indeterminate"></div>
+                  </div>
+                  <div
+                    v-if="isStalled(imp)"
+                    class="faint nowrap"
+                    style="font-size: 11.5px; margin-top: 4px"
+                    title="No progress for a while — the import was likely interrupted (e.g. server restart). It is safe to delete it."
+                  >
+                    stalled? safe to delete
+                  </div>
+                </template>
+                <span v-else :class="['import-status', imp.status]" :title="imp.error_message ?? imp.status">{{ imp.status }}</span>
               </td>
               <td class="mono" style="text-align: right">{{ formatNumber(imp.parsed_count) }}</td>
               <td class="mono dim" style="text-align: right">{{ formatNumber(imp.error_count) }}</td>
@@ -99,7 +131,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, type ImportRecord } from '../api/client'
 import { formatBytes, formatDateTime, formatNumber } from '../utils/format'
@@ -122,14 +154,63 @@ const maxUploadMb = import.meta.env.VITE_MAX_UPLOAD_MB ?? '1024'
 
 const totalParsed = computed(() => imports.value.reduce((sum, i) => sum + i.parsed_count, 0))
 
-async function refresh() {
-  loading.value = true
+const hasProcessing = computed(() => imports.value.some((i) => i.status === 'processing'))
+
+/** Percent complete for a processing import; null when unknown (e.g. single-doc JSON). Capped at 99 while running. */
+function progressPct(imp: ImportRecord): number | null {
+  if (imp.status !== 'processing' || imp.total_lines <= 0) return null
+  return Math.min(99, Math.floor((imp.parsed_count / imp.total_lines) * 100))
+}
+
+function progressTitle(imp: ImportRecord): string {
+  if (imp.total_lines > 0) return `${formatNumber(imp.parsed_count)} of ${formatNumber(imp.total_lines)} lines`
+  return `${formatNumber(imp.parsed_count)} entries parsed so far`
+}
+
+/** A processing row that never reported any total is almost certainly orphaned (e.g. server restart mid-import). */
+const STALLED_MS = 5 * 60 * 1000
+function isStalled(imp: ImportRecord): boolean {
+  if (imp.status !== 'processing' || imp.parsed_count > 0 || imp.total_lines > 0) return false
+  if (!imp.started_at) return false
+  return Date.now() - new Date(imp.started_at).getTime() > STALLED_MS
+}
+
+/** Own upload's live server-side progress (matched by filename while parsing). */
+const ownProcessing = computed(
+  () =>
+    imports.value.find((i) => i.status === 'processing' && i.filename === uploadName.value) ??
+    imports.value.find((i) => i.status === 'processing'),
+)
+const ownPct = computed(() => (ownProcessing.value ? progressPct(ownProcessing.value) : null))
+const ownParsed = computed(() => ownProcessing.value?.parsed_count ?? 0)
+const ownTotal = computed(() => ownProcessing.value?.total_lines ?? 0)
+
+let pollTimer: number | undefined
+function ensurePolling() {
+  if (pollTimer !== undefined) return
+  pollTimer = window.setInterval(() => {
+    void refresh(true)
+  }, 2500)
+}
+function maybeStopPolling() {
+  if (!uploading.value && !hasProcessing.value && pollTimer !== undefined) {
+    window.clearInterval(pollTimer)
+    pollTimer = undefined
+  }
+}
+watch(hasProcessing, (active) => {
+  if (active) ensurePolling()
+  else maybeStopPolling()
+})
+
+async function refresh(silent = false) {
+  if (!silent) loading.value = true
   try {
     imports.value = (await api.get('/imports')).data
   } catch {
     error.value = 'Could not load imports. Is the backend reachable?'
   } finally {
-    loading.value = false
+    if (!silent) loading.value = false
   }
 }
 
@@ -141,6 +222,7 @@ async function upload(file: File) {
   notice.value = ''
   const form = new FormData()
   form.append('file', file)
+  ensurePolling()
   try {
     const res = await api.post('/imports/upload', form, {
       headers: { 'Content-Type': 'multipart/form-data' },
@@ -159,6 +241,7 @@ async function upload(file: File) {
     error.value = axiosMessage(e)
   } finally {
     uploading.value = false
+    maybeStopPolling()
   }
 }
 
@@ -191,4 +274,7 @@ async function removeImport(imp: ImportRecord) {
 }
 
 onMounted(refresh)
+onUnmounted(() => {
+  if (pollTimer !== undefined) window.clearInterval(pollTimer)
+})
 </script>

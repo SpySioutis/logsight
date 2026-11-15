@@ -23,19 +23,20 @@ import io
 import json
 import os
 import tempfile
+import uuid
 import zipfile
 from datetime import datetime, timezone
 from typing import IO, Iterable, Iterator
 
 from fastapi import HTTPException, UploadFile
-from sqlalchemy import insert
+from sqlalchemy import insert, text
 from sqlalchemy.orm import Session
 
 from app import parsers
 from app.config import settings
 from app.models import Import, LogEntry
 
-CHUNK_ROWS = 1000
+CHUNK_ROWS = 5000
 
 _FORMAT_BY_EXT: dict[str, str] = {
     ".log": "plaintext",
@@ -74,13 +75,82 @@ def _member_format(name: str) -> str | None:
 def _flush(db: Session, import_id: str, batch: list[dict]) -> int:
     if not batch:
         return 0
-    db.execute(insert(LogEntry), [{**row, "import_id": import_id} for row in batch])
-    db.commit()
+    if db.get_bind().dialect.name == "postgresql":
+        _copy_flush(db, import_id, batch)
+    else:
+        # SQLite (tests): plain executemany, same rows.
+        db.execute(insert(LogEntry), [{**row, "import_id": import_id} for row in batch])
+        db.commit()
     return len(batch)
+
+
+_COPY_COLUMNS = (
+    "id",
+    "import_id",
+    "timestamp",
+    "severity",
+    "service",
+    "source",
+    "message",
+    "raw",
+    "attributes",
+    "fingerprint",
+    "trace_id",
+    "request_id",
+    "created_at",
+)
+
+
+def _copy_flush(db: Session, import_id: str, batch: list[dict]) -> None:
+    """Bulk-load one batch via PostgreSQL COPY (much faster than INSERT).
+
+    Same rows, same transaction as the ORM path: heartbeat attribute updates
+    made before this call commit together with the copied rows. `created_at`
+    is omitted so the DB `DEFAULT now()` applies.
+    """
+    buf = io.StringIO(newline="")
+    writer = csv.writer(buf)
+    # One timestamp per batch (matches old per-flush Python default granularity).
+    now = datetime.now(timezone.utc).isoformat()
+    for row in batch:
+        timestamp = row["timestamp"]
+        message = row["message"] or ""
+        writer.writerow(
+            [
+                row["id"],
+                import_id,
+                timestamp.isoformat() if timestamp is not None else None,
+                row["severity"],
+                row["service"],
+                row["source"],
+                # '' must stay an empty string, not become NULL: quote it.
+                message if message != "" else '""',
+                row["raw"],
+                json.dumps(row["attributes"]),
+                row["fingerprint"],
+                row["trace_id"],
+                row["request_id"],
+                now,
+            ]
+        )
+    # Skip per-commit fsync for bulk data; the final bookkeeping commit
+    # stays fully durable. Log data is re-importable on crash.
+    db.execute(text("SET LOCAL synchronous_commit TO OFF"))
+    sa_conn = db.connection()
+    # driver_connection on 2.0, plain .connection (pool fairy) on newer 2.x;
+    # either way .cursor() yields the real psycopg3 cursor below.
+    raw = getattr(sa_conn, "driver_connection", None) or sa_conn.connection
+    with raw.cursor() as cur:
+        with cur.copy(
+            f"COPY log_entries ({', '.join(_COPY_COLUMNS)}) FROM STDIN WITH (FORMAT csv)"
+        ) as copy:
+            copy.write(buf.getvalue())
+    db.commit()
 
 
 def _row(entry: parsers.ParsedEntry) -> dict:
     return {
+        "id": str(uuid.uuid4()),
         "timestamp": entry.timestamp,
         "severity": entry.severity,
         "service": entry.service,
@@ -88,7 +158,7 @@ def _row(entry: parsers.ParsedEntry) -> dict:
         "message": entry.message,
         "raw": entry.raw,
         "attributes": entry.attributes or {},
-        "fingerprint": entry.fingerprint,
+        "fingerprint": entry.fingerprint or None,
         "trace_id": entry.trace_id,
         "request_id": entry.request_id,
     }
@@ -145,21 +215,78 @@ def _gunzip_to_temp(src_path: str, cap: int) -> str:
     return out.name
 
 
+def _count_lines(path: str) -> int:
+    """Fast newline count for progress denominators (I/O only, no parsing)."""
+    total = 0
+    with open(path, "rb") as fb:
+        while True:
+            chunk = fb.read(1024 * 1024)
+            if not chunk:
+                break
+            total += chunk.count(b"\n")
+    return total
+
+
+def _count_zip_lines(tmp_path: str) -> int:
+    """Sum of newline counts across line-based zip members.
+
+    Single-document JSON members have an unknown entry count without
+    parsing, so they contribute nothing (callers treat 0 as unknown).
+    """
+    total = 0
+    try:
+        archive = zipfile.ZipFile(tmp_path)
+    except zipfile.BadZipFile:
+        return 0
+    with archive:
+        for info in archive.infolist():
+            if info.is_dir() or info.filename.split("/")[-1].startswith("."):
+                continue
+            if _member_format(info.filename) not in ("plaintext", "jsonl", "csv"):
+                continue
+            try:
+                raw = archive.open(info, "r")
+            except (zipfile.BadZipFile, OSError):
+                continue
+            with raw:
+                stream: IO[bytes] = raw
+                if info.filename.lower().endswith(".gz"):
+                    try:
+                        stream = gzip.GzipFile(fileobj=raw)  # type: ignore[assignment]
+                    except OSError:
+                        continue
+                while True:
+                    chunk = stream.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += chunk.count(b"\n")
+    return total
+
+
 class _Parser:
     """Accumulates parsed entries and flushes them in batches."""
 
-    def __init__(self, db: Session, import_id: str) -> None:
+    def __init__(self, db: Session, import_id: str, record: Import | None = None) -> None:
         self._db = db
         self._import_id = import_id
+        self._record = record
         self.batch: list[dict] = []
         self.total_lines = 0
         self.parsed = 0
         self.errors = 0
 
+    def _sync_progress(self) -> None:
+        # Persisted by the _flush() commit below, so clients polling
+        # GET /imports mid-import see live percent-complete.
+        if self._record is not None:
+            self._record.parsed_count = self.parsed
+            self._record.error_count = self.errors
+
     def add(self, entry: parsers.ParsedEntry) -> None:
         self.batch.append(_row(entry))
         self.parsed += 1
         if len(self.batch) >= CHUNK_ROWS:
+            self._sync_progress()
             _flush(self._db, self._import_id, self.batch)
             self.batch = []
 
@@ -350,19 +477,31 @@ def import_upload(db: Session, upload: UploadFile) -> tuple[Import, bool]:
             db.refresh(record)
             return record, True
 
-        parser = _Parser(db, record.id)
+        parser = _Parser(db, record.id, record)
         counter = _Counter(settings.max_upload_bytes)
         try:
+            # Progress denominator for live percent-complete, committed
+            # upfront so clients polling GET /imports mid-import can use
+            # it. Fast I/O-only newline counts (no parsing); single-doc
+            # JSON stays 0 (unknown) and shows a live count instead.
+            parse_path = tmp_path
             if fmt == "zip":
-                _parse_zip(parser, tmp_path, counter)
+                pre_total = _count_zip_lines(tmp_path)
             else:
-                parse_path = tmp_path
-                inner_fmt = fmt
                 if is_gz:
                     parse_path = _gunzip_to_temp(tmp_path, settings.max_upload_bytes)
                     extra_temps.append(parse_path)
+                # Single-doc JSON entry count is unknown without parsing.
+                pre_total = 0 if fmt == "json" else _count_lines(parse_path)
+            if pre_total:
+                record.total_lines = pre_total
+                db.commit()
+
+            if fmt == "zip":
+                _parse_zip(parser, tmp_path, counter)
+            else:
                 with open(parse_path, "r", encoding="utf-8", errors="replace") as fh:
-                    _parse_file_object(parser, fh, inner_fmt, counter)
+                    _parse_file_object(parser, fh, fmt, counter)
             parser.flush()
         except ValueError as exc:
             db.rollback()

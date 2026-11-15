@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import IO, Any, Iterator
 
 from app.grouping import fingerprint
-from app.severity import normalize_severity
+from app.severity import is_error_like, normalize_severity
 
 MAX_LINE_LENGTH = 64 * 1024  # truncate pathological single lines
 MAX_JOINED_LENGTH = 64 * 1024  # cap for multiline stacktrace-joined entries
@@ -34,7 +34,9 @@ class ParsedEntry:
     request_id: str | None = None
 
     def __post_init__(self) -> None:
-        if not self.fingerprint and self.message:
+        # Fingerprints are only consumed for error-like severities (error
+        # groups, top errors), so skip the normalize + SHA-256 cost elsewhere.
+        if not self.fingerprint and self.message and is_error_like(self.severity):
             self.fingerprint = fingerprint(self.message)
 
 
@@ -265,7 +267,8 @@ def append_continuation(entry: ParsedEntry, line: str) -> None:
     text = line.rstrip("\n")
     entry.message = (entry.message + "\n" + text)[:MAX_JOINED_LENGTH]
     entry.raw = ((entry.raw or "") + "\n" + text)[:MAX_JOINED_LENGTH]
-    entry.fingerprint = fingerprint(entry.message)
+    if is_error_like(entry.severity):
+        entry.fingerprint = fingerprint(entry.message)
 
 
 # --- JSON / JSONL ------------------------------------------------------------
