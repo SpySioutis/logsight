@@ -5,11 +5,11 @@ from __future__ import annotations
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import Import, LogEntry
+from app.models import ErrorGroupState, Import, LogEntry
 from app.schemas import DashboardSummary, SeverityBucket, SourceBucket, TimelinePoint, TopError
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -20,27 +20,31 @@ _WARNING_SEVERITIES = ("WARN", "WARNING")
 
 @router.get("/summary", response_model=DashboardSummary)
 def summary(db: Session = Depends(get_db)) -> DashboardSummary:
-    total = db.query(func.count(LogEntry.id)).scalar() or 0
-    errors = db.query(func.count(LogEntry.id)).filter(LogEntry.severity.in_(_ERROR_SEVERITIES)).scalar() or 0
-    warnings = db.query(func.count(LogEntry.id)).filter(LogEntry.severity.in_(_WARNING_SEVERITIES)).scalar() or 0
-    info = db.query(func.count(LogEntry.id)).filter(LogEntry.severity == "INFO").scalar() or 0
-    critical = db.query(func.count(LogEntry.id)).filter(LogEntry.severity == "CRITICAL").scalar() or 0
-    sources = (
-        db.query(func.count(func.distinct(LogEntry.source))).filter(LogEntry.source.isnot(None)).scalar() or 0
+    # Single-pass aggregation: one scan instead of one per counter.
+    # (Previously 8 sequential full-table queries; ~30 s on a large table.)
+    row = (
+        db.query(
+            func.count(LogEntry.id).label("total"),
+            func.count(LogEntry.id).filter(LogEntry.severity.in_(_ERROR_SEVERITIES)).label("errors"),
+            func.count(LogEntry.id).filter(LogEntry.severity.in_(_WARNING_SEVERITIES)).label("warnings"),
+            func.count(LogEntry.id).filter(LogEntry.severity == "INFO").label("info"),
+            func.count(LogEntry.id).filter(LogEntry.severity == "CRITICAL").label("critical"),
+            func.count(func.distinct(LogEntry.source)).label("sources"),
+            func.min(LogEntry.timestamp).label("first_seen"),
+            func.max(LogEntry.timestamp).label("last_seen"),
+        ).one()
     )
     imports = db.query(func.count(Import.id)).scalar() or 0
-    first_seen = db.query(func.min(LogEntry.timestamp)).scalar()
-    last_seen = db.query(func.max(LogEntry.timestamp)).scalar()
     return DashboardSummary(
-        total=total,
-        errors=errors,
-        warnings=warnings,
-        info=info,
-        critical=critical,
-        sources=sources,
+        total=row.total or 0,
+        errors=row.errors or 0,
+        warnings=row.warnings or 0,
+        info=row.info or 0,
+        critical=row.critical or 0,
+        sources=row.sources or 0,
         imports=imports,
-        first_seen=first_seen,
-        last_seen=last_seen,
+        first_seen=row.first_seen,
+        last_seen=row.last_seen,
     )
 
 
@@ -102,6 +106,7 @@ def top_sources(limit: int = Query(default=10, ge=1, le=50), db: Session = Depen
 
 @router.get("/top-errors", response_model=list[TopError])
 def top_errors(limit: int = Query(default=10, ge=1, le=50), db: Session = Depends(get_db)) -> list[TopError]:
+    muted = select(ErrorGroupState.fingerprint).where(ErrorGroupState.status == "muted")
     rows = (
         db.query(
             LogEntry.fingerprint,
@@ -112,11 +117,18 @@ def top_errors(limit: int = Query(default=10, ge=1, le=50), db: Session = Depend
             func.max(LogEntry.timestamp).label("last_seen"),
         )
         .filter(LogEntry.severity.in_(_ERROR_SEVERITIES))
+        .filter(LogEntry.fingerprint.notin_(muted))
         .group_by(LogEntry.fingerprint)
         .order_by(func.count(LogEntry.id).desc())
         .limit(limit)
         .all()
     )
+    states = {
+        r.fingerprint: r.status
+        for r in db.query(ErrorGroupState)
+        .filter(ErrorGroupState.fingerprint.in_([r.fingerprint for r in rows if r.fingerprint]))
+        .all()
+    }
     return [
         TopError(
             fingerprint=r.fingerprint or "",
@@ -125,6 +137,7 @@ def top_errors(limit: int = Query(default=10, ge=1, le=50), db: Session = Depend
             count=r.count,
             first_seen=r.first_seen,
             last_seen=r.last_seen,
+            status=states.get(r.fingerprint or "", "open"),
         )
         for r in rows
     ]

@@ -5,10 +5,14 @@ import io
 import pytest
 
 from app.parsers import (
+    append_continuation,
+    is_continuation_line,
     iter_json_array,
+    parse_csv_row,
     parse_json_line,
     parse_json_object,
     parse_plain_line,
+    parse_syslog_line,
     parse_timestamp,
 )
 
@@ -95,3 +99,71 @@ def test_json_array_document():
 def test_json_invalid_document_raises():
     with pytest.raises(ValueError):
         list(iter_json_array(io.StringIO("[1, 2")))
+
+
+def test_plain_line_trace_request_kv():
+    entry = parse_plain_line("INFO service:api trace_id:abc-1 request_id:req-7 all good")
+    assert entry.trace_id == "abc-1"
+    assert entry.request_id == "req-7"
+    assert entry.service == "api"
+
+
+def test_json_object_trace_request_excluded_from_attributes():
+    entry = parse_json_object(
+        {"level": "info", "message": "ok", "traceId": "t-1", "requestId": "r-2", "user": "u1"},
+        "{}",
+    )
+    assert entry.trace_id == "t-1"
+    assert entry.request_id == "r-2"
+    assert entry.attributes == {"user": "u1"}
+
+
+def test_syslog_rfc5424_parses_priority_and_ids():
+    entry = parse_syslog_line(
+        '<34>1 2024-05-01T10:00:00.000Z web-1 api - - [sd@1 trace_id="t-2"] login failed'
+    )
+    assert entry is not None
+    assert entry.severity == "CRITICAL"  # 34 % 8 == 2 -> crit
+    assert entry.service == "api"
+    assert entry.source == "web-1"
+    assert entry.trace_id == "t-2"
+    assert entry.message == "login failed"
+
+
+def test_syslog_invalid_returns_none():
+    assert parse_syslog_line("not syslog at all") is None
+    assert parse_syslog_line("<999>1 invalid") is None
+    # Falls back to plain parsing without raising.
+    entry = parse_plain_line("<999>1 INFO hello")
+    assert entry.severity == "INFO"
+
+
+def test_csv_row_maps_fields():
+    entry = parse_csv_row(
+        {
+            "timestamp": "2024-05-01T10:00:00Z",
+            "level": "40",
+            "service": "api",
+            "source": "web-1",
+            "message": "bad",
+            "trace_id": "t-3",
+        },
+        "raw",
+    )
+    assert entry.severity == "ERROR"
+    assert entry.timestamp is not None
+    assert entry.trace_id == "t-3"
+
+
+def test_continuation_detection_and_join():
+    assert is_continuation_line("\tat com.example.A.a(A.java:1)") is True
+    assert is_continuation_line("Caused by: boom") is True
+    assert is_continuation_line("Traceback (most recent call last):") is True
+    assert is_continuation_line("2024-05-01 INFO fresh line") is False
+    assert is_continuation_line("   ") is False
+
+    entry = parse_plain_line("2024-05-01 ERROR boom")
+    before = entry.fingerprint
+    append_continuation(entry, "\tat com.example.A.a(A.java:1)")
+    assert "at com.example" in entry.message
+    assert entry.fingerprint != before

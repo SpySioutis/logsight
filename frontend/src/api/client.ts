@@ -34,6 +34,9 @@ export interface LogEntry {
   raw: string | null
   attributes: Record<string, unknown> | null
   fingerprint: string | null
+  trace_id: string | null
+  request_id: string | null
+  snippet?: string | null
 }
 
 export interface LogPage {
@@ -50,6 +53,8 @@ export interface LogQuery {
   source?: string
   service?: string
   import_id?: string
+  trace_id?: string
+  request_id?: string
   date_from?: string
   date_to?: string
   sort?: string
@@ -65,6 +70,8 @@ export function toParams(query: LogQuery): Record<string, string | string[]> {
   if (query.source) params.source = query.source
   if (query.service) params.service = query.service
   if (query.import_id) params.import_id = query.import_id
+  if (query.trace_id) params.trace_id = query.trace_id
+  if (query.request_id) params.request_id = query.request_id
   if (query.date_from) params.date_from = query.date_from
   if (query.date_to) params.date_to = query.date_to
   if (query.sort) params.sort = query.sort
@@ -100,6 +107,28 @@ export interface ErrorGroup {
   sources: string[]
   first_seen: string | null
   last_seen: string | null
+  status: string
+  assignee: string | null
+  note: string | null
+}
+
+export interface ErrorTrendPoint {
+  bucket: string
+  count: number
+}
+
+export interface TraceSummary {
+  trace_id: string
+  count: number
+  services: string[]
+  severities: string[]
+  first_seen: string | null
+  last_seen: string | null
+}
+
+export interface TraceDetail extends TraceSummary {
+  duration_seconds: number | null
+  entries: LogEntry[]
 }
 
 export interface SavedFilter {

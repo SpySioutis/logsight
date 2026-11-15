@@ -41,6 +41,9 @@ class LogEntryOut(BaseModel):
     raw: str | None
     attributes: dict[str, Any] | None
     fingerprint: str | None
+    trace_id: str | None = None
+    request_id: str | None = None
+    snippet: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -53,7 +56,7 @@ class LogPage(BaseModel):
     pages: int
 
 
-SortField = Literal["timestamp", "severity", "source", "service"]
+SortField = Literal["timestamp", "severity", "source", "service", "relevance"]
 SortDir = Literal["asc", "desc"]
 
 
@@ -92,6 +95,7 @@ class TopError(BaseModel):
     count: int
     first_seen: datetime | None
     last_seen: datetime | None
+    status: str = "open"
 
 
 class ErrorGroup(BaseModel):
@@ -102,6 +106,53 @@ class ErrorGroup(BaseModel):
     sources: list[str]
     first_seen: datetime | None
     last_seen: datetime | None
+    status: str = "open"
+    assignee: str | None = None
+    note: str | None = None
+
+
+ErrorGroupStatus = Literal["open", "acknowledged", "resolved", "muted"]
+
+
+class ErrorGroupStateOut(BaseModel):
+    fingerprint: str
+    status: str
+    assignee: str | None = None
+    note: str | None = None
+    updated_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class ErrorGroupStateIn(BaseModel):
+    status: ErrorGroupStatus
+    assignee: str | None = Field(default=None, max_length=256)
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class ErrorTrendPoint(BaseModel):
+    bucket: str
+    count: int
+
+
+class TraceSummary(BaseModel):
+    trace_id: str
+    count: int
+    services: list[str]
+    severities: list[str]
+    first_seen: datetime | None
+    last_seen: datetime | None
+
+
+class TraceDetail(BaseModel):
+    trace_id: str
+    count: int
+    services: list[str]
+    severities: list[str]
+    first_seen: datetime | None
+    last_seen: datetime | None
+    duration_seconds: float | None = None
+    entries: list[LogEntryOut]
 
 
 class SavedFilterIn(BaseModel):

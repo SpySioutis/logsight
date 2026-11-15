@@ -12,7 +12,8 @@ Three Docker Compose services (`compose.yaml` at repo root):
   :80, `/api/` reverse-proxied to `backend:8000`, SPA fallback).
 
 No background workers: imports are processed synchronously in the upload
-request (streamed to temp file, parsed, batch-inserted with 1000-row commits).
+request (streamed to temp file, parsed, bulk-loaded via PostgreSQL COPY in
+5000-row batches; SQLite fallback uses executemany inserts).
 
 ## Directory structure
 
@@ -22,26 +23,29 @@ backend/
     main.py            # FastAPI app, lifespan, router wiring under /api
     config.py          # pydantic-settings (DATABASE_URL, MAX_UPLOAD_MB)
     database.py        # engine + SessionLocal + get_db dependency
-    models.py          # Import, LogEntry, SavedFilter (ORM only; schema owned by migrations/)
+    models.py          # Import, LogEntry, SavedFilter, ErrorGroupState (ORM only; schema owned by migrations/)
     schemas.py         # Pydantic request/response models
     severity.py        # canonical levels + normalize_severity (never discards)
-    parsers.py         # streaming plaintext / JSONL / JSON parsers
+    parsers.py         # streaming plaintext (+syslog/multiline) / JSONL / JSON / CSV parsers
     grouping.py        # deterministic error fingerprinting
-    import_service.py  # upload → temp file + hash → parse → batch insert
+    search.py          # q-language parser, ILIKE fallback, snippet highlighting
+    import_service.py  # upload → temp file + hash → parse (+gzip/zip) → COPY bulk load + progress heartbeats
     migrate.py         # applies backend/migrations/*.sql once each
-    routers/           # health, imports, logs, dashboard, errors, filters
-  migrations/0001_initial.sql, 0002_trgm.sql
+    routers/           # health, imports, logs, dashboard, errors, filters, traces
+  migrations/0001_initial.sql … 0005_error_states.sql
   tests/               # pytest (SQLite override in conftest.py)
 frontend/
   src/
     api/client.ts      # axios instance + types + toParams()
-    utils/             # severity.ts, format.ts (+ vitest files)
+    utils/             # severity.ts, format.ts, highlight.ts (+ vitest files)
     stores/settings.ts # Pinia: theme + page size (localStorage)
-    components/        # SeverityBadge, FilterBar, LogTable, LogDetails,
-                       # Pagination, StatCard, TimeChart, EmptyState
-    views/             # Dashboard, Explorer, Errors, Imports, SavedFilters, Settings
+    components/        # AppIcon, SeverityBadge, StatusBadge, FilterBar, LogTable,
+                       # LogDetails, Pagination, StatCard, TimeChart, TrendSpark,
+                       # EmptyState, PageHeader, TableSkeleton
+    views/             # Dashboard, Explorer, Errors, Traces, Imports, SavedFilters, Settings, TraceView
     router/index.ts
-samples/               # app.log, app.jsonl, structured.json (manual testing)
+samples/               # app.log, app.jsonl, structured.json, events.csv,
+                       # syslog.log, trace.jsonl (manual testing)
 ```
 
 ## Technology stack (preferred stack — do not change without user approval)
@@ -56,6 +60,16 @@ framework, database or AI service may be introduced silently.
   HTTP concerns while `import_service.py` owns import logic; parsers must
   stream and never raise on bad line content (per-line `ValueError` only for
   malformed JSONL/JSON).
+- Search: `q` goes through `search.py` (`parse_search_query`); PostgreSQL uses
+  the `ix_log_entries_search` expression GIN index (byte-identical expression
+  in `routers/logs.py`), SQLite uses the `ILIKE` emulation so tests stay
+  portable. Snippets are HTML-escaped Python-side with `<mark>` hits only.
+  PG free-text matching runs in an `id IN (SELECT … OFFSET 0)` subquery — the
+  OFFSET is load-bearing (blocks a catastrophic plan flattening); verify with
+  EXPLAIN on a large table before touching it.
+- Trace handling: `trace_id` / `request_id` are first-class indexed columns,
+  extracted from JSON keys, plain `k=v` pairs, CSV headers and syslog
+  structured data; `/api/traces/{id}` matches either column.
 - Frontend: Composition API + `<script setup lang="ts">`, shared types from
   `api/client.ts`, dark-theme CSS variables in `assets/styles.css`; keep views
   dense, no decorative animation, no emoji.
@@ -86,10 +100,11 @@ cd frontend && npm test && npm run build
 
 ## Testing commands
 
-- `cd backend && uv run pytest -q` — 29 tests. API tests use an isolated
+- `cd backend && uv run pytest -q` — 54 tests. API tests use an isolated
   in-memory SQLite DB (`tests/conftest.py`); SQLite-only branches (e.g.
-  `strftime` timeline bucketing) exist solely to keep these tests portable.
-- `cd frontend && npm test` — 9 vitest tests.
+  `strftime` timeline bucketing, `ILIKE` search) exist solely to keep these
+  tests portable.
+- `cd frontend && npm test` — 12 vitest tests.
 
 Never claim tests pass without running them in-session.
 
@@ -99,22 +114,29 @@ Never claim tests pass without running them in-session.
   via the `schema_migrations` table. New schema change = new numbered file;
   never edit an applied migration.
 - `models.py` must stay compatible with both PostgreSQL (prod) and SQLite
-  (tests): no postgres-only column/index constructs in models.
+  (tests): no postgres-only column/index constructs in models. Full-text
+  search needs no model change (expression GIN index + raw SQL only).
 - Counts must reference a table column
   (`with_entities(func.count(LogEntry.id))`) — bare `func.count()` drops the
   FROM clause and returns 1. Timeline bucketing branches on dialect
   (`date_trunc` vs `strftime`).
+- `error_group_states.fingerprint` is a standalone PK (no FK to log entries);
+  missing state means `open`. Muted fingerprints are excluded from
+  `top-errors`, never from the groups list itself.
 - FK `log_entries.import_id → imports.id ON DELETE CASCADE`; tests enable the
   SQLite FK pragma to exercise it.
 
 ## API conventions
 
 - Routers mounted under `/api`; Swagger at `/api/docs`.
-- Explorer filtering/sorting/pagination is server-side; validate `sort`,
-  `direction` and `severity` with 400s, never 500s. Page cap: 500 rows.
-- Upload: extension allowlist + `MAX_UPLOAD_MB` cap (413), content-hash
-  duplicate detection (`status: "duplicate"`, no re-insert), per-line error
-  counting without aborting the import.
+- Explorer filtering/sorting/pagination is server-side; validate `sort`
+  (incl. `relevance`), `direction`, `severity` and error `status` with 400s,
+  never 500s. Page cap: 500 rows. `sort=relevance` falls back to newest-first
+  when there is no `q` or no tsvector (SQLite).
+- Upload: extension allowlist (`.log .txt .jsonl .ndjson .json .csv`, plus
+  `.gz` / `.zip`) + `MAX_UPLOAD_MB` cap (413) applied to raw and decompressed
+  bytes, content-hash duplicate detection (`status: "duplicate"`, no
+  re-insert), per-line error counting without aborting the import.
 
 ## Security requirements
 
@@ -127,5 +149,5 @@ Never claim tests pass without running them in-session.
 
 Changing frameworks/database, adding background workers or auth, replacing
 deterministic grouping with AI/semantic clustering, editing applied
-migrations, restructuring services. Keep docs (`README.md`, `MANUAL.md`,
-`AGENTS.md`, `.env.example`) synchronized with every change.
+migrations, restructuring services. Keep docs (`README.md`, `README.el.md`,
+`MANUAL.md`, `AGENTS.md`, `LLM.md`, `.env.example`) synchronized with every change.
