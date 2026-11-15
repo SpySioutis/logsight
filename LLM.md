@@ -252,6 +252,7 @@ Migrations (never edit an applied one; new change = new numbered file):
 | `0003_traces.sql` | `trace_id`, `request_id` columns + btree indexes |
 | `0004_search.sql` | expression GIN index `ix_log_entries_search` over `to_tsvector('english', message ‖ service ‖ source ‖ trace_id ‖ request_id)` |
 | `0005_error_states.sql` | `error_group_states(fingerprint PK, status CHECK, assignee, note, updated_at)` |
+| `0006_dashboard_indexes.sql` | composite covering indexes `ix_log_entries_timestamp_severity(timestamp DESC, severity)` (timeline index-only scans) + `ix_log_entries_severity_fingerprint(severity, fingerprint)` (top-errors). Index-only build, no heap rewrite |
 
 Critical database rules (several were learned the hard way on a 5.8M-row,
 7.6 GB production table — do not regress them):
@@ -282,6 +283,18 @@ Critical database rules (several were learned the hard way on a 5.8M-row,
    survive container restarts — cancel via
    `SELECT pg_cancel_backend(pid)`. Monitor long index builds with
    `SELECT * FROM pg_stat_progress_create_index;`.
+9. **Dashboard aggregates must be single-pass.** `/dashboard/summary` was 8
+   sequential full-table queries (~30 s on a large table); it is now one
+   `SELECT` with `COUNT … FILTER (WHERE …)` + `MIN/MAX` +
+   `COUNT(DISTINCT)`. Splitting it further does not help (verified: the
+   timestamp/distinct half still scans). If the dashboard ever needs more,
+   the next step is a pre-computed summary table — an architectural change
+   needing approval, not more indexes.
+10. **VACUUM matters more than indexes after bulk deletes.** A table with
+    ~6M dead tuples (deleted imports, autovacuum behind) forces seq scans
+    and defeats index-only plans. After mass deletes, run
+    `VACUUM (ANALYZE) log_entries;` — regular VACUUM is online-safe;
+    `VACUUM FULL`/backfills need approval (heap rewrite, long lock).
 
 ## 7. Conventions & rules (must-follow)
 

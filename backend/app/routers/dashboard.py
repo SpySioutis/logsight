@@ -20,27 +20,31 @@ _WARNING_SEVERITIES = ("WARN", "WARNING")
 
 @router.get("/summary", response_model=DashboardSummary)
 def summary(db: Session = Depends(get_db)) -> DashboardSummary:
-    total = db.query(func.count(LogEntry.id)).scalar() or 0
-    errors = db.query(func.count(LogEntry.id)).filter(LogEntry.severity.in_(_ERROR_SEVERITIES)).scalar() or 0
-    warnings = db.query(func.count(LogEntry.id)).filter(LogEntry.severity.in_(_WARNING_SEVERITIES)).scalar() or 0
-    info = db.query(func.count(LogEntry.id)).filter(LogEntry.severity == "INFO").scalar() or 0
-    critical = db.query(func.count(LogEntry.id)).filter(LogEntry.severity == "CRITICAL").scalar() or 0
-    sources = (
-        db.query(func.count(func.distinct(LogEntry.source))).filter(LogEntry.source.isnot(None)).scalar() or 0
+    # Single-pass aggregation: one scan instead of one per counter.
+    # (Previously 8 sequential full-table queries; ~30 s on a large table.)
+    row = (
+        db.query(
+            func.count(LogEntry.id).label("total"),
+            func.count(LogEntry.id).filter(LogEntry.severity.in_(_ERROR_SEVERITIES)).label("errors"),
+            func.count(LogEntry.id).filter(LogEntry.severity.in_(_WARNING_SEVERITIES)).label("warnings"),
+            func.count(LogEntry.id).filter(LogEntry.severity == "INFO").label("info"),
+            func.count(LogEntry.id).filter(LogEntry.severity == "CRITICAL").label("critical"),
+            func.count(func.distinct(LogEntry.source)).label("sources"),
+            func.min(LogEntry.timestamp).label("first_seen"),
+            func.max(LogEntry.timestamp).label("last_seen"),
+        ).one()
     )
     imports = db.query(func.count(Import.id)).scalar() or 0
-    first_seen = db.query(func.min(LogEntry.timestamp)).scalar()
-    last_seen = db.query(func.max(LogEntry.timestamp)).scalar()
     return DashboardSummary(
-        total=total,
-        errors=errors,
-        warnings=warnings,
-        info=info,
-        critical=critical,
-        sources=sources,
+        total=row.total or 0,
+        errors=row.errors or 0,
+        warnings=row.warnings or 0,
+        info=row.info or 0,
+        critical=row.critical or 0,
+        sources=row.sources or 0,
         imports=imports,
-        first_seen=first_seen,
-        last_seen=last_seen,
+        first_seen=row.first_seen,
+        last_seen=row.last_seen,
     )
 
 
