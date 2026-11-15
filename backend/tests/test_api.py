@@ -88,8 +88,9 @@ def test_dashboard_and_errors_from_real_data(client):
     refused = [g for g in groups if "connection refused" in g["sample"]]
     assert refused and refused[0]["count"] == 2
     fp = refused[0]["fingerprint"]
-    entries = client.get(f"/api/errors/groups/{fp}").json()
+    entries = client.get(f"/api/errors/groups/{fp}", params={"page_size": 25}).json()
     assert entries["total"] == 2
+    assert len(entries["items"]) == 2
 
     timeline = client.get("/api/dashboard/timeline").json()
     assert timeline and timeline[0]["total"] == 5

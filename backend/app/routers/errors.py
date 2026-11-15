@@ -77,7 +77,11 @@ def error_group_entries(
         .filter(LogEntry.fingerprint == fingerprint)
         .order_by(LogEntry.timestamp.desc(), LogEntry.id.desc())
     )
-    total = query.with_entities(func.count(LogEntry.id)).scalar() or 0
+    # Count with a filter-only query: reusing `query` would carry its
+    # ORDER BY into the aggregate, which PostgreSQL rejects.
+    total = (
+        db.query(func.count(LogEntry.id)).filter(LogEntry.fingerprint == fingerprint).scalar() or 0
+    )
     items = query.offset((page - 1) * page_size).limit(page_size).all()
     pages = max(1, (total + page_size - 1) // page_size)
     return LogPage(
