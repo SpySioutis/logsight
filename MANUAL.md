@@ -46,7 +46,7 @@ No other installation step is needed: images build from the repository.
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | `logsight` | DB credentials (compose injects matching `DATABASE_URL` into the backend; the checked-in `DATABASE_URL` default is only for local dev) |
 | `BACKEND_PORT` | `8000` | host port publishing the API |
 | `FRONTEND_PORT` | `8080` | host port publishing the UI |
-| `MAX_UPLOAD_MB` | `100` | maximum import file size in megabytes |
+| `MAX_UPLOAD_MB` | `1024` | maximum import file size in megabytes (1 GB) |
 
 3. Never commit `.env`. It is covered by `.gitignore`.
 

@@ -2,7 +2,7 @@ name: logsight
 
 services:
   db:
-    image: postgres:17
+    image: postgres:17.7
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-logsight}
@@ -26,7 +26,7 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-logsight}:${POSTGRES_PASSWORD:-logsight}@db:5432/${POSTGRES_DB:-logsight}
-      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-100}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-1024}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     depends_on:

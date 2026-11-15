@@ -23,7 +23,7 @@ See [MANUAL.md](MANUAL.md) for manual startup, configuration, migrations, testin
 
 ## Features
 
-- **Log import** — plain text (`.log`, `.txt`), JSON Lines (`.jsonl`, `.ndjson`) and structured JSON (`.json`); streaming parse, batch inserts, 100 MB default limit, progress display, duplicate detection by content hash, import history.
+- **Log import** — plain text (`.log`, `.txt`), JSON Lines (`.jsonl`, `.ndjson`) and structured JSON (`.json`); streaming parse, batch inserts, 1 GB default limit, progress display, duplicate detection by content hash, import history.
 - **Log explorer** — server-side pagination, sorting, full-text search, date-range, severity, source and service filters (combinable), log details drawer with copy-to-clipboard.
 - **Severity normalization** — TRACE / DEBUG / INFO / WARN / WARNING / ERROR / FATAL / CRITICAL / UNKNOWN. Aliases (`warn`, `err`, `crit`, numeric levels…) are normalized; unknown values become UNKNOWN and are never discarded.
 - **Dashboard** — totals, errors, warnings, criticals, logs over time, severity distribution, most active sources, most frequent errors. Empty states when nothing is imported.
@@ -69,7 +69,7 @@ Copy `.env.example` to `.env` to override defaults:
 | `POSTGRES_USER / PASSWORD / DB` | `logsight` | database credentials |
 | `BACKEND_PORT` | `8000` | host port for the API |
 | `FRONTEND_PORT` | `8080` | host port for the UI |
-| `MAX_UPLOAD_MB` | `100` | max import file size |
+| `MAX_UPLOAD_MB` | `1024` | max import file size in megabytes (1 GB) |
 
 Never commit a real `.env` file.
 

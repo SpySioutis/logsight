@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     database_url: str = "postgresql+psycopg://logsight:logsight@localhost:5432/logsight"
-    max_upload_mb: int = 100
+    max_upload_mb: int = 1024
 
     @property
     def max_upload_bytes(self) -> int:

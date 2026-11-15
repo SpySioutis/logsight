@@ -95,7 +95,7 @@ const uploadPct = ref(0)
 const uploadName = ref('')
 const dragging = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
-const maxUploadMb = import.meta.env.VITE_MAX_UPLOAD_MB ?? '100'
+const maxUploadMb = import.meta.env.VITE_MAX_UPLOAD_MB ?? '1024'
 
 async function refresh() {
   loading.value = true
