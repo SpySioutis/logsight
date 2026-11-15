@@ -5,11 +5,11 @@ from __future__ import annotations
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import Import, LogEntry
+from app.models import ErrorGroupState, Import, LogEntry
 from app.schemas import DashboardSummary, SeverityBucket, SourceBucket, TimelinePoint, TopError
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -102,6 +102,7 @@ def top_sources(limit: int = Query(default=10, ge=1, le=50), db: Session = Depen
 
 @router.get("/top-errors", response_model=list[TopError])
 def top_errors(limit: int = Query(default=10, ge=1, le=50), db: Session = Depends(get_db)) -> list[TopError]:
+    muted = select(ErrorGroupState.fingerprint).where(ErrorGroupState.status == "muted")
     rows = (
         db.query(
             LogEntry.fingerprint,
@@ -112,11 +113,18 @@ def top_errors(limit: int = Query(default=10, ge=1, le=50), db: Session = Depend
             func.max(LogEntry.timestamp).label("last_seen"),
         )
         .filter(LogEntry.severity.in_(_ERROR_SEVERITIES))
+        .filter(LogEntry.fingerprint.notin_(muted))
         .group_by(LogEntry.fingerprint)
         .order_by(func.count(LogEntry.id).desc())
         .limit(limit)
         .all()
     )
+    states = {
+        r.fingerprint: r.status
+        for r in db.query(ErrorGroupState)
+        .filter(ErrorGroupState.fingerprint.in_([r.fingerprint for r in rows if r.fingerprint]))
+        .all()
+    }
     return [
         TopError(
             fingerprint=r.fingerprint or "",
@@ -125,6 +133,7 @@ def top_errors(limit: int = Query(default=10, ge=1, le=50), db: Session = Depend
             count=r.count,
             first_seen=r.first_seen,
             last_seen=r.last_seen,
+            status=states.get(r.fingerprint or "", "open"),
         )
         for r in rows
     ]

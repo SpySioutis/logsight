@@ -85,6 +85,8 @@ function describe(params: LogQuery): string {
   if (params.severity?.length) parts.push(`severity=${params.severity.join(',')}`)
   if (params.source) parts.push(`source~${params.source}`)
   if (params.service) parts.push(`service~${params.service}`)
+  if (params.trace_id) parts.push(`trace=${params.trace_id}`)
+  if (params.request_id) parts.push(`request=${params.request_id}`)
   if (params.date_from) parts.push(`from ${params.date_from}`)
   if (params.date_to) parts.push(`to ${params.date_to}`)
   return parts.join(' · ') || 'no criteria'

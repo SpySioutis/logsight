@@ -23,11 +23,12 @@ See [MANUAL.md](MANUAL.md) for manual startup, configuration, migrations, testin
 
 ## Features
 
-- **Log import** — plain text (`.log`, `.txt`), JSON Lines (`.jsonl`, `.ndjson`) and structured JSON (`.json`); streaming parse, batch inserts, 1 GB default limit, progress display, duplicate detection by content hash, import history.
-- **Log explorer** — server-side pagination, sorting, full-text search, date-range, severity, source and service filters (combinable), log details drawer with copy-to-clipboard.
+- **Log import** — plain text (`.log`, `.txt`, incl. RFC 5424 syslog and multiline stacktraces), JSON Lines (`.jsonl`, `.ndjson`), structured JSON (`.json`) and CSV (`.csv`); gzip (`.gz`) and bundles (`.zip`) accepted; streaming parse, batch inserts, 1 GB default limit (raw + decompressed), progress display, duplicate detection by content hash, import history.
+- **Log explorer** — server-side pagination, sorting (incl. relevance ranking), full-text search with operators (`"exact phrase"`, `-exclude`, `service:`, `source:`, `severity:`, `trace:`, `request:`), highlighted snippets, date-range, severity, source, service, trace and request filters (combinable), log details drawer with copy-to-clipboard and trace links.
 - **Severity normalization** — TRACE / DEBUG / INFO / WARN / WARNING / ERROR / FATAL / CRITICAL / UNKNOWN. Aliases (`warn`, `err`, `crit`, numeric levels…) are normalized; unknown values become UNKNOWN and are never discarded.
-- **Dashboard** — totals, errors, warnings, criticals, logs over time, severity distribution, most active sources, most frequent errors. Empty states when nothing is imported.
-- **Error analysis** — deterministic fingerprint grouping (masks IPs, UUIDs, numbers, hex ids), counts, first/last occurrence, drill-down to matching entries.
+- **Dashboard** — totals, errors, warnings, criticals, logs over time, severity distribution, most active sources, most frequent errors (muted groups excluded). Empty states when nothing is imported.
+- **Error analysis** — deterministic fingerprint grouping (masks IPs, UUIDs, numbers, hex ids), counts, first/last occurrence, per-group trend sparkline, lifecycle status (open/acknowledged/resolved/muted) with assignee and note, drill-down to matching entries.
+- **Trace correlation** — `trace_id` / `request_id` extracted at import; trace timeline view across services with duration, services and severities.
 - **Saved filters** — create, edit, delete and re-apply search presets.
 - **Dark developer UI** — dense, minimal Vue 3 + TypeScript SPA (light theme optional in Settings).
 
@@ -46,10 +47,10 @@ See [MANUAL.md](MANUAL.md) for manual startup, configuration, migrations, testin
 logsight/
 ├── backend/               # FastAPI app (uv-managed)
 │   ├── app/               # config, database, models, schemas, severity,
-│   │   │                  # parsers, grouping, import_service, migrate, main
-│   │   └── routers/       # health, imports, logs, dashboard, errors, filters
-│   ├── migrations/        # versioned SQL (0001_initial, 0002_trgm)
-│   └── tests/             # pytest: severity, parsers, grouping, API
+│   │   │                  # parsers, grouping, search, import_service, migrate, main
+│   │   └── routers/       # health, imports, logs, dashboard, errors, filters, traces
+│   ├── migrations/        # versioned SQL (0001_initial … 0005_error_states)
+│   └── tests/             # pytest: severity, parsers, grouping, search, API
 ├── frontend/              # Vue 3 + TS SPA (npm)
 │   └── src/               # views, components, api client, stores, utils
 ├── samples/               # example log files for manual testing
@@ -79,16 +80,17 @@ Base path `/api`. Full reference with schemas at `/api/docs` (Swagger UI).
 
 - `GET /api/health`
 - `POST /api/imports/upload` · `GET /api/imports` · `GET /api/imports/{id}` · `DELETE /api/imports/{id}`
-- `GET /api/logs` (q, severity[], source, service, import_id, date_from, date_to, sort, direction, page, page_size) · `GET /api/logs/{id}` · `GET /api/logs/meta/facets`
+- `GET /api/logs` (q with `"phrase" -exclude field:value` operators, severity[], source, service, import_id, trace_id, request_id, date_from, date_to, sort incl. `relevance`, direction, page, page_size) · `GET /api/logs/{id}` · `GET /api/logs/meta/facets`
 - `GET /api/dashboard/summary|timeline|severity-distribution|top-sources|top-errors`
-- `GET /api/errors/groups` · `GET /api/errors/groups/{fingerprint}`
+- `GET /api/errors/groups` (`status` filter) · `GET /api/errors/groups/{fingerprint}` · `PUT /api/errors/groups/{fingerprint}/state` · `GET /api/errors/groups/{fingerprint}/trend`
+- `GET /api/traces` · `GET /api/traces/{id}`
 - `GET|POST /api/filters` · `GET|PUT|DELETE /api/filters/{id}`
 
 ## Tests
 
 ```sh
-cd backend && uv run pytest -q        # 29 tests: unit + API integration (SQLite)
-cd frontend && npm test               # 9 vitest tests
+cd backend && uv run pytest -q        # 54 tests: unit + API integration (SQLite)
+cd frontend && npm test               # 12 vitest tests
 ```
 
 Documented in MANUAL.md; a full Docker validation is described there too.
@@ -96,8 +98,8 @@ Documented in MANUAL.md; a full Docker validation is described there too.
 ## Known limitations
 
 - Imports are processed synchronously in the upload request (no background worker yet); very large files take as long as the HTTP request lasts. Upload progress is shown in the UI.
-- A single-document `.json` file must fit within the upload size limit (it is parsed as one document; `.jsonl` streams line-by-line instead).
-- Full-text search uses `ILIKE` + trigram index; no stemming or ranking.
+- A single-document `.json` file must fit within the upload size limit (it is parsed as one document; `.jsonl` streams line-by-line instead). The same limit caps decompressed `.gz` / `.zip` output.
+- Full-text search uses an expression GIN index with stemming + `ts_rank` on PostgreSQL; the test suite emulates it with `ILIKE` on SQLite.
 - Error grouping is deterministic fingerprinting, not semantic clustering.
 - No authentication/multi-user support in this version — run behind your own access control if exposed.
 

@@ -66,7 +66,10 @@
           <tbody>
             <tr v-for="row in topErrors" :key="row.fingerprint">
               <td class="mono ellipsis" :title="row.sample">{{ truncate(row.sample, 90) }}</td>
-              <td class="mono nowrap" style="text-align: right">{{ formatNumber(row.count) }}×</td>
+              <td class="mono nowrap" style="text-align: right">
+                {{ formatNumber(row.count) }}×
+                <span v-if="row.status && row.status !== 'open'" class="dim">· {{ row.status }}</span>
+              </td>
             </tr>
           </tbody>
         </table>
@@ -92,7 +95,7 @@ const summary = ref<DashboardSummary | null>(null)
 const timeline = ref<TimelinePoint[]>([])
 const severityDist = ref<{ severity: string; count: number }[]>([])
 const topSources = ref<{ source: string; count: number }[]>([])
-const topErrors = ref<{ fingerprint: string; sample: string; count: number }[]>([])
+const topErrors = ref<{ fingerprint: string; sample: string; count: number; status?: string }[]>([])
 const bucket = ref<'day' | 'hour'>('day')
 
 const chartPoints = computed(() =>

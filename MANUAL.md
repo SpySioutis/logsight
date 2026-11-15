@@ -3,7 +3,8 @@
 ## 1. Project overview
 
 LogSight is a self-hosted log analysis platform. You upload application log
-files (plain text, JSON Lines or structured JSON) and then browse, search,
+files (plain text incl. syslog, JSON Lines, structured JSON or CSV, optionally
+gzip-compressed or bundled in a zip archive) and then browse, search,
 filter and analyze them through a web UI backed by a FastAPI API and
 PostgreSQL 17. Three Docker services (`db`, `backend`, `frontend`) are
 orchestrated with Docker Compose.
@@ -57,11 +58,21 @@ Docker volume. Schema is created by versioned SQL migrations, not by the ORM:
 
 - `backend/migrations/0001_initial.sql` — tables + indexes.
 - `backend/migrations/0002_trgm.sql` — `pg_trgm` extension + message trigram index.
+- `backend/migrations/0003_traces.sql` — `trace_id` / `request_id` columns + indexes.
+- `backend/migrations/0004_search.sql` — expression GIN index
+  `ix_log_entries_search` for ranked full-text search (no heap changes).
+- `backend/migrations/0005_error_states.sql` — `error_group_states` lifecycle table.
 
 Migrations run automatically every time the backend container starts
 (`python -m app.migrate` before uvicorn); already-applied files are recorded
 in `schema_migrations` and skipped. To apply them manually against a running
 stack, see §11.
+
+Note: `0004_search.sql` builds a GIN index over all stored rows. On tables
+with millions of entries this one-time build can take several minutes, during
+which the backend stays unhealthy and the API is unavailable. Let it finish;
+interrupting it only rolls back and retries on the next boot. Progress is
+visible in Postgres via `SELECT * FROM pg_stat_progress_create_index;`.
 
 ## 7. Docker setup
 
@@ -122,7 +133,7 @@ docker compose exec backend python -m app.migrate
 
 ## 12. How to run tests
 
-Backend (29 tests: severity, parsers, grouping + API integration on isolated SQLite):
+Backend (54 tests: severity, parsers, grouping, search + API integration on isolated SQLite):
 
 ```sh
 cd backend
@@ -130,7 +141,7 @@ uv sync
 uv run pytest -q
 ```
 
-Frontend (9 vitest tests: severity/format utils, API param builder):
+Frontend (12 vitest tests: severity/format/highlight utils, API param builder):
 
 ```sh
 cd frontend
@@ -175,8 +186,9 @@ cat logsight-backup.sql | docker compose exec -T db psql -U logsight -d logsight
 | `permission denied` on the Docker socket (Linux) | Add your user to the `docker` group, then log out/in. |
 | Port already in use | Set `FRONTEND_PORT` / `BACKEND_PORT` in `.env`. |
 | Backend unhealthy / DB connection refused on first boot | Wait for the `db` healthcheck; check `docker compose logs db`. Migrations run before the API accepts traffic. |
-| `413 File exceeds the limit` on upload | Increase `MAX_UPLOAD_MB`, rebuild backend (`docker compose up --build backend`). |
-| `400 Unsupported file type` | Use `.log`, `.txt`, `.jsonl`, `.ndjson` or `.json`. |
+| `413 File exceeds the limit` on upload | Increase `MAX_UPLOAD_MB`, rebuild backend (`docker compose up --build backend`). The same cap applies to decompressed `.gz` / `.zip` output. |
+| `400 Unsupported file type` | Use `.log`, `.txt`, `.jsonl`, `.ndjson`, `.json`, `.csv`, `.gz` or `.zip`. |
+| `422` on a `.zip` upload | The archive holds no supported log files, or a member is corrupt — check the `detail` message. |
 | Blank dashboard | No logs imported yet — upload a file in Sources / Imports (try `samples/app.log`). |
 | Frontend `Could not load…` errors | Backend unreachable: `curl http://localhost:8000/api/health`; check `docker compose ps`. |
 
@@ -185,6 +197,7 @@ cat logsight-backup.sql | docker compose exec -T db psql -U logsight -d logsight
 - Imported files are untrusted input: they are streamed to disk, parsed with
   size caps, never executed, and errors are isolated per line.
 - Upload size, extension allowlist, and Pydantic input validation are enforced.
+  Decompressed `.gz` / `.zip` output is capped by the same size limit.
 - All queries use SQLAlchemy parameter binding. No secrets are baked into
   images; credentials come from environment. Keep `.env` out of Git.
 - This version has no authentication: do not expose it to untrusted networks

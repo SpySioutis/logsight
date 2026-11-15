@@ -10,7 +10,8 @@
   <div class="panel">
     <h2>Upload a log file</h2>
     <p class="dim" style="margin-top: 0">
-      Supported: plain text (.log, .txt), JSON Lines (.jsonl, .ndjson), structured JSON (.json).
+      Supported: plain text (.log, .txt, incl. syslog + stacktraces), JSON Lines (.jsonl, .ndjson),
+      structured JSON (.json), CSV (.csv). Gzip (.gz) and bundles (.zip) accepted.
       Limit: {{ maxUploadMb }} MB. Files are parsed line-by-line on the server.
     </p>
     <div
@@ -31,7 +32,7 @@
         <span class="dim" style="font-size: 12px">exact duplicates are detected by content hash and skipped</span>
       </template>
     </div>
-    <input ref="fileInput" type="file" accept=".log,.txt,.jsonl,.ndjson,.json" hidden @change="onPicked" />
+    <input ref="fileInput" type="file" accept=".log,.txt,.jsonl,.ndjson,.json,.csv,.gz,.zip" hidden @change="onPicked" />
   </div>
 
   <div class="panel">

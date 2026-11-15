@@ -17,6 +17,7 @@ from app.grouping import fingerprint
 from app.severity import normalize_severity
 
 MAX_LINE_LENGTH = 64 * 1024  # truncate pathological single lines
+MAX_JOINED_LENGTH = 64 * 1024  # cap for multiline stacktrace-joined entries
 
 
 @dataclass
@@ -29,6 +30,8 @@ class ParsedEntry:
     raw: str
     attributes: dict[str, Any] = field(default_factory=dict)
     fingerprint: str = ""
+    trace_id: str | None = None
+    request_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.fingerprint and self.message:
@@ -111,11 +114,18 @@ _LEVEL_RE = re.compile(
     r"\b(?P<level>TRACE|DEBUG|INFO|NOTICE|WARN(?:ING)?|ERROR|ERR(?:OR)?|FATAL|CRITICAL|CRIT|ALERT|EMERG(?:ENCY)?)\b",
     re.IGNORECASE,
 )
-_KV_RE = re.compile(r"\b(?P<key>service|app|application|source|logger|host|component|module|request_id|trace_id)\s*[:=]\s*(?P<val>[^\s,;]+)")
+_KV_RE = re.compile(
+    r"\b(?P<key>service|app|application|source|logger|host|component|module"
+    r"|request[-_]?id|requestid|trace[-_]?id|traceid|correlation[-_]?id|correlationid"
+    r"|span[-_]?id|spanid)\s*[:=]\s*(?P<val>[^\s,;]+)"
+)
 
 
 def parse_plain_line(line: str) -> ParsedEntry:
     """Parse one plain-text log line; never raises on bad input."""
+    syslog_entry = parse_syslog_line(line)
+    if syslog_entry is not None:
+        return syslog_entry
     raw = line if len(line) <= MAX_LINE_LENGTH else line[:MAX_LINE_LENGTH] + "…"
     text = line.strip()
     level_match = _LEVEL_RE.search(text)
@@ -123,13 +133,19 @@ def parse_plain_line(line: str) -> ParsedEntry:
     timestamp = parse_timestamp(text)
     service: str | None = None
     source: str | None = None
+    trace_id: str | None = None
+    request_id: str | None = None
     for kv in _KV_RE.finditer(text):
-        key = kv.group("key").lower()
+        key = re.sub(r"[-_]", "", kv.group("key").lower())
         val = kv.group("val").strip().strip("'\"")
         if key in ("service", "app", "application") and service is None:
             service = val
         elif key in ("source", "logger", "host", "component", "module") and source is None:
             source = val
+        elif key in ("requestid", "spanid") and request_id is None:
+            request_id = val
+        elif key in ("traceid", "correlationid") and trace_id is None:
+            trace_id = val
     message = text
     return ParsedEntry(
         timestamp=timestamp,
@@ -139,7 +155,117 @@ def parse_plain_line(line: str) -> ParsedEntry:
         message=message,
         raw=raw,
         attributes={},
+        trace_id=trace_id,
+        request_id=request_id,
     )
+
+
+# --- syslog (RFC 5424) ---------------------------------------------------------
+
+_SYSLOG_RE = re.compile(
+    r"^<(?P<pri>\d{1,3})>(?P<version>\d)\s+(?P<ts>\S+)\s+(?P<host>\S+)\s+"
+    r"(?P<app>\S+)\s+(?P<proc>\S+)\s+(?P<msgid>\S+)\s+"
+    r"(?P<sd>\[.*?\]|-)(?:\s+(?P<msg>.*))?$"
+)
+_SYSLOG_SD_PARAM = re.compile(r'(\w+)="([^"]*)"')
+_SYSLOG_SEVERITY = {
+    0: "CRITICAL",  # emerg
+    1: "CRITICAL",  # alert
+    2: "CRITICAL",  # crit
+    3: "ERROR",  # err
+    4: "WARNING",  # warning
+    5: "INFO",  # notice
+    6: "INFO",  # info
+    7: "DEBUG",  # debug
+}
+
+
+def parse_syslog_line(line: str) -> ParsedEntry | None:
+    """Parse one RFC 5424 syslog line; None when the line is not syslog."""
+    text = line.strip()
+    if not text.startswith("<"):
+        return None
+    match = _SYSLOG_RE.match(text)
+    if not match:
+        return None
+    try:
+        pri = int(match.group("pri"))
+    except ValueError:
+        return None
+    if pri > 191:
+        return None
+    raw = line if len(line) <= MAX_LINE_LENGTH else line[:MAX_LINE_LENGTH] + "…"
+    severity = _SYSLOG_SEVERITY.get(pri % 8, "UNKNOWN")
+    ts_raw = match.group("ts")
+    timestamp = None if ts_raw == "-" else (_parse_iso(ts_raw) or parse_timestamp(ts_raw))
+    host = match.group("host")
+    app = match.group("app")
+    source = None if host == "-" else host
+    service = None if app == "-" else app
+    trace_id: str | None = None
+    request_id: str | None = None
+    attributes: dict[str, Any] = {}
+    sd = match.group("sd")
+    if sd != "-":
+        for key, val in _SYSLOG_SD_PARAM.findall(sd):
+            normalized = re.sub(r"[-_]", "", key.lower())
+            if normalized in ("traceid", "correlationid") and trace_id is None:
+                trace_id = val
+            elif normalized in ("requestid", "spanid") and request_id is None:
+                request_id = val
+            else:
+                attributes[key] = val
+    msg = (match.group("msg") or "").strip()
+    message = msg if msg else text
+    return ParsedEntry(
+        timestamp=timestamp,
+        severity=severity,
+        service=service,
+        source=source,
+        message=message,
+        raw=raw,
+        attributes=attributes,
+        trace_id=trace_id,
+        request_id=request_id,
+    )
+
+
+# --- multiline stacktraces -----------------------------------------------------
+
+_CONTINUATION_PREFIXES = (
+    "at ",
+    "Caused by",
+    "Suppressed:",
+    "Traceback (most recent call last):",
+    "Traceback",
+    'File "',
+    "File '",
+    "...",
+    "|",
+    "+",
+)
+
+
+def is_continuation_line(line: str) -> bool:
+    """True when a plaintext line continues the previous entry's stacktrace."""
+    if not line.strip():
+        return False
+    stripped = line.strip()
+    if stripped.startswith(_CONTINUATION_PREFIXES):
+        return True
+    if line[:1].isspace() and stripped.startswith(
+        ("at ", "File ", "raise ", "Error", "Exception", "^")
+    ):
+        return True
+    return False
+
+
+def append_continuation(entry: ParsedEntry, line: str) -> None:
+    """Append a continuation line to a pending entry, keeping caps + fingerprint."""
+    text = line.rstrip("\n")
+    entry.message = (entry.message + "\n" + text)[:MAX_JOINED_LENGTH]
+    entry.raw = ((entry.raw or "") + "\n" + text)[:MAX_JOINED_LENGTH]
+    entry.fingerprint = fingerprint(entry.message)
 
 
 # --- JSON / JSONL ------------------------------------------------------------
@@ -149,6 +275,8 @@ _LEVEL_KEYS = ("level", "severity", "log_level", "loglevel", "priority")
 _SERVICE_KEYS = ("service", "app", "application", "app_name")
 _SOURCE_KEYS = ("source", "logger", "logger_name", "host", "hostname", "component", "module", "file")
 _MESSAGE_KEYS = ("message", "msg", "log", "text", "error", "event")
+_TRACE_KEYS = ("trace_id", "traceId", "traceID", "trace", "correlation_id", "correlationId")
+_REQUEST_KEYS = ("request_id", "requestId", "requestID", "request", "span_id", "spanId")
 
 
 def _first_present(obj: dict[str, Any], keys: tuple[str, ...]) -> Any:
@@ -192,10 +320,21 @@ def parse_json_object(obj: dict[str, Any], raw: str) -> ParsedEntry:
         message = json.dumps(message_value)[:4000]
     else:
         message = str(message_value) if message_value is not None else raw.strip()
-    known = set(_TS_KEYS) | set(_LEVEL_KEYS) | set(_SERVICE_KEYS) | set(_SOURCE_KEYS) | set(_MESSAGE_KEYS)
-    attributes = {k: v for k, v in obj.items() if k not in known}
+    known = (
+        set(_TS_KEYS)
+        | set(_LEVEL_KEYS)
+        | set(_SERVICE_KEYS)
+        | set(_SOURCE_KEYS)
+        | set(_MESSAGE_KEYS)
+        | set(_TRACE_KEYS)
+        | set(_REQUEST_KEYS)
+    )
+    lowered_known = {k.lower() for k in known}
+    attributes = {k: v for k, v in obj.items() if k not in known and str(k).lower() not in lowered_known}
     service = _first_present(obj, _SERVICE_KEYS)
     source = _first_present(obj, _SOURCE_KEYS)
+    trace_id = _first_present(obj, _TRACE_KEYS)
+    request_id = _first_present(obj, _REQUEST_KEYS)
     return ParsedEntry(
         timestamp=_coerce_timestamp(_first_present(obj, _TS_KEYS)),
         severity=normalize_severity(level),
@@ -204,7 +343,15 @@ def parse_json_object(obj: dict[str, Any], raw: str) -> ParsedEntry:
         message=message or raw.strip(),
         raw=raw if len(raw) <= MAX_LINE_LENGTH else raw[:MAX_LINE_LENGTH] + "…",
         attributes=attributes,
+        trace_id=str(trace_id) if trace_id is not None else None,
+        request_id=str(request_id) if request_id is not None else None,
     )
+
+
+def parse_csv_row(row: dict[str, Any], raw: str) -> ParsedEntry:
+    """Parse one CSV record via the JSON field mapping (headers are keys)."""
+    cleaned = {k: v for k, v in row.items() if k and v not in (None, "")}
+    return parse_json_object(cleaned, raw)
 
 
 def parse_json_line(line: str, lineno: int) -> ParsedEntry | None:

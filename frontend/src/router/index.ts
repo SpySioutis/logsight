@@ -5,6 +5,7 @@ import Errors from '../views/Errors.vue'
 import Imports from '../views/Imports.vue'
 import SavedFilters from '../views/SavedFilters.vue'
 import Settings from '../views/Settings.vue'
+import TraceView from '../views/TraceView.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -15,6 +16,7 @@ const router = createRouter({
     { path: '/imports', name: 'imports', component: Imports },
     { path: '/filters', name: 'filters', component: SavedFilters },
     { path: '/settings', name: 'settings', component: Settings },
+    { path: '/traces/:id', name: 'trace', component: TraceView },
   ],
 })
 

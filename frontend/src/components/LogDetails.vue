@@ -20,6 +20,20 @@
         <dd>{{ entry.source ?? '—' }}</dd>
         <dt>Import</dt>
         <dd class="mono">{{ entry.import_id }}</dd>
+        <dt>Trace</dt>
+        <dd class="mono">
+          <RouterLink v-if="entry.trace_id" :to="`/traces/${encodeURIComponent(entry.trace_id)}`">
+            {{ entry.trace_id }}
+          </RouterLink>
+          <template v-else>—</template>
+        </dd>
+        <dt>Request</dt>
+        <dd class="mono">
+          <RouterLink v-if="entry.request_id" :to="`/traces/${encodeURIComponent(entry.request_id)}`">
+            {{ entry.request_id }}
+          </RouterLink>
+          <template v-else>—</template>
+        </dd>
         <dt>Fingerprint</dt>
         <dd class="mono">{{ entry.fingerprint ?? '—' }}</dd>
       </dl>
@@ -42,6 +56,7 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { RouterLink } from 'vue-router'
 import type { LogEntry } from '../api/client'
 import { formatDateTime } from '../utils/format'
 import SeverityBadge from './SeverityBadge.vue'
@@ -59,6 +74,8 @@ async function copyEntry() {
     `severity: ${props.entry.severity}`,
     `service: ${props.entry.service ?? 'n/a'}`,
     `source: ${props.entry.source ?? 'n/a'}`,
+    `trace_id: ${props.entry.trace_id ?? 'n/a'}`,
+    `request_id: ${props.entry.request_id ?? 'n/a'}`,
     `message: ${props.entry.message}`,
   ].join('\n')
   try {

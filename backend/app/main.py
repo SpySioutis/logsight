@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import dashboard, errors, filters, health, imports, logs
+from app.routers import dashboard, errors, filters, health, imports, logs, traces
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("logsight")
@@ -42,3 +42,4 @@ app.include_router(logs.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
 app.include_router(errors.router, prefix="/api")
 app.include_router(filters.router, prefix="/api")
+app.include_router(traces.router, prefix="/api")

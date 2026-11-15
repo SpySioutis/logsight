@@ -5,7 +5,8 @@
       <input
         type="search"
         :value="modelValue.q ?? ''"
-        placeholder="message, source or service…"
+        placeholder='words, "exact phrase", -exclude, service:api…'
+        title='Operators: "exact phrase", -exclude, service:x, source:x, severity:error, trace:id, request:id'
         @input="update('q', ($event.target as HTMLInputElement).value || undefined)"
       />
     </label>
@@ -50,6 +51,26 @@
       <datalist id="service-options">
         <option v-for="s in services" :key="s" :value="s" />
       </datalist>
+    </label>
+
+    <label class="field">
+      Trace ID
+      <input
+        type="text"
+        :value="modelValue.trace_id ?? ''"
+        placeholder="exact…"
+        @input="update('trace_id', ($event.target as HTMLInputElement).value || undefined)"
+      />
+    </label>
+
+    <label class="field">
+      Request ID
+      <input
+        type="text"
+        :value="modelValue.request_id ?? ''"
+        placeholder="exact…"
+        @input="update('request_id', ($event.target as HTMLInputElement).value || undefined)"
+      />
     </label>
 
     <label class="field">

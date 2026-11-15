@@ -5,12 +5,19 @@ from __future__ import annotations
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, or_
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import LogEntry
 from app.schemas import LogEntryOut, LogPage
+from app.search import (
+    ParsedQuery,
+    apply_field_filters,
+    apply_ilike_search,
+    highlight_snippet,
+    parse_search_query,
+)
 from app.severity import SEVERITIES, normalize_severity
 
 router = APIRouter(prefix="/logs", tags=["logs"])
@@ -22,24 +29,52 @@ SORT_COLUMNS = {
     "source": LogEntry.source,
     "service": LogEntry.service,
 }
+SORT_FIELDS = (*SORT_COLUMNS, "relevance")
+
+# Must stay byte-identical to the expression in migrations/0004_search.sql
+# so PostgreSQL matches the ix_log_entries_search GIN index.
+_SEARCH_VECTOR_EXPR = (
+    "to_tsvector('english', coalesce(message, '') || ' ' || coalesce(service, '') || ' ' || "
+    "coalesce(source, '') || ' ' || coalesce(trace_id, '') || ' ' || coalesce(request_id, ''))"
+)
 
 
 def apply_filters(
     query,
     *,
-    q: str | None,
+    parsed: ParsedQuery | None,
     severities: list[str] | None,
     source: str | None,
     service: str | None,
     import_id: str | None,
+    trace_id: str | None,
+    request_id: str | None,
     date_from: datetime | None,
     date_to: datetime | None,
+    dialect: str = "sqlite",
 ):
-    if q:
-        like = f"%{q}%"
-        query = query.filter(
-            or_(LogEntry.message.ilike(like), LogEntry.source.ilike(like), LogEntry.service.ilike(like))
-        )
+    if parsed is not None and parsed.has_fts:
+        if dialect == "postgresql" and parsed.websearch_text:
+            # Match ids in an uncorrelated subquery so the expensive
+            # to_tsvector() expression is evaluated once via the GIN bitmap.
+            # The OFFSET 0 is load-bearing: without it PostgreSQL flattens
+            # the IN-subquery into "timestamp index scan + per-row
+            # to_tsvector()", which scans the whole table when matches are
+            # rare. Do not remove it.
+            match_ids = (
+                select(LogEntry.id)
+                .where(
+                    text(
+                        f"{_SEARCH_VECTOR_EXPR} @@ websearch_to_tsquery('english', :wsq)"
+                    ).bindparams(wsq=parsed.websearch_text)
+                )
+                .offset(0)
+            )
+            query = query.filter(LogEntry.id.in_(match_ids))
+        else:
+            query = apply_ilike_search(query, parsed)
+    if parsed is not None:
+        query = apply_field_filters(query, parsed)
     if severities:
         # Normalize client-supplied severities; drop empties, never 500 on bad input.
         wanted = {normalize_severity(s) for s in severities if s}
@@ -50,6 +85,10 @@ def apply_filters(
         query = query.filter(LogEntry.service.ilike(f"%{service}%"))
     if import_id:
         query = query.filter(LogEntry.import_id == import_id)
+    if trace_id:
+        query = query.filter(LogEntry.trace_id == trace_id)
+    if request_id:
+        query = query.filter(LogEntry.request_id == request_id)
     if date_from:
         query = query.filter(LogEntry.timestamp >= date_from)
     if date_to:
@@ -64,6 +103,8 @@ def list_logs(
     source: str | None = Query(default=None, max_length=512),
     service: str | None = Query(default=None, max_length=256),
     import_id: str | None = Query(default=None),
+    trace_id: str | None = Query(default=None, max_length=128),
+    request_id: str | None = Query(default=None, max_length=128),
     date_from: datetime | None = Query(default=None),
     date_to: datetime | None = Query(default=None),
     sort: str = Query(default="timestamp"),
@@ -72,8 +113,8 @@ def list_logs(
     page_size: int = Query(default=50, ge=1, le=MAX_PAGE_SIZE),
     db: Session = Depends(get_db),
 ) -> LogPage:
-    if sort not in SORT_COLUMNS:
-        raise HTTPException(status_code=400, detail=f"Invalid sort field. Use one of: {sorted(SORT_COLUMNS)}.")
+    if sort not in SORT_FIELDS:
+        raise HTTPException(status_code=400, detail=f"Invalid sort field. Use one of: {sorted(SORT_FIELDS)}.")
     if direction not in ("asc", "desc"):
         raise HTTPException(status_code=400, detail="direction must be 'asc' or 'desc'.")
     if severity:
@@ -84,26 +125,49 @@ def list_logs(
                 detail=f"Unknown severity value(s): {unknown}. Valid: {list(SEVERITIES)}.",
             )
 
+    parsed = parse_search_query(q)
+    dialect = db.get_bind().dialect.name
     query = apply_filters(
         db.query(LogEntry),
-        q=q,
+        parsed=parsed,
         severities=severity,
         source=source,
         service=service,
         import_id=import_id,
+        trace_id=trace_id,
+        request_id=request_id,
         date_from=date_from,
         date_to=date_to,
+        dialect=dialect,
     )
     # NB: count the PK column so SQLAlchemy keeps the FROM clause
     # (bare func.count() would count a single FROM-less row).
     total = query.with_entities(func.count(LogEntry.id)).scalar() or 0
 
-    column = SORT_COLUMNS[sort]
-    ordered = query.order_by(column.asc() if direction == "asc" else column.desc(), LogEntry.id.desc())
+    if sort == "relevance":
+        if parsed.has_fts and dialect == "postgresql" and parsed.websearch_text:
+            ordered = query.order_by(
+                text(
+                    f"ts_rank({_SEARCH_VECTOR_EXPR}, websearch_to_tsquery('english', :wsq)) DESC"
+                ).bindparams(wsq=parsed.websearch_text),
+                LogEntry.id.desc(),
+            )
+        else:
+            column = SORT_COLUMNS["timestamp"]
+            ordered = query.order_by(column.desc(), LogEntry.id.desc())
+    else:
+        column = SORT_COLUMNS[sort]
+        ordered = query.order_by(column.asc() if direction == "asc" else column.desc(), LogEntry.id.desc())
     items = ordered.offset((page - 1) * page_size).limit(page_size).all()
     pages = max(1, (total + page_size - 1) // page_size)
+    results: list[LogEntryOut] = []
+    for item in items:
+        out = LogEntryOut.model_validate(item)
+        if parsed.has_fts:
+            out.snippet = highlight_snippet(item.message, parsed)
+        results.append(out)
     return LogPage(
-        items=[LogEntryOut.model_validate(i) for i in items],
+        items=results,
         total=total,
         page=page,
         page_size=page_size,

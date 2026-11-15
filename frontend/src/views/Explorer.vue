@@ -28,6 +28,7 @@
           <option value="severity:asc">Severity ↑</option>
           <option value="source:asc">Source A–Z</option>
           <option value="service:asc">Service A–Z</option>
+          <option value="relevance:desc">Relevance</option>
         </select>
       </label>
       <label class="field" style="flex-direction: row; align-items: center">
@@ -78,6 +79,8 @@ function initialQuery(): LogQuery {
     source: typeof q.source === 'string' ? q.source : undefined,
     service: typeof q.service === 'string' ? q.service : undefined,
     import_id: typeof q.import_id === 'string' ? q.import_id : undefined,
+    trace_id: typeof q.trace_id === 'string' ? q.trace_id : undefined,
+    request_id: typeof q.request_id === 'string' ? q.request_id : undefined,
     date_from: typeof q.date_from === 'string' ? q.date_from : undefined,
     date_to: typeof q.date_to === 'string' ? q.date_to : undefined,
     sort: 'timestamp',
@@ -126,7 +129,7 @@ function scheduleReload() {
 }
 
 watch(
-  () => [query.q, query.severity, query.source, query.service, query.date_from, query.date_to, query.page_size, query.sort, query.direction],
+  () => [query.q, query.severity, query.source, query.service, query.trace_id, query.request_id, query.date_from, query.date_to, query.page_size, query.sort, query.direction],
   scheduleReload,
   { deep: true },
 )
@@ -137,6 +140,9 @@ function resetQuery() {
     severity: [],
     source: undefined,
     service: undefined,
+    import_id: undefined,
+    trace_id: undefined,
+    request_id: undefined,
     date_from: undefined,
     date_to: undefined,
     page: 1,
@@ -176,6 +182,8 @@ async function saveCurrentFilter() {
         severity: query.severity,
         source: query.source,
         service: query.service,
+        trace_id: query.trace_id,
+        request_id: query.request_id,
         date_from: query.date_from,
         date_to: query.date_to,
         sort: query.sort,
