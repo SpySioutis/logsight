@@ -26,7 +26,10 @@ def trunc_expr(dialect: str, label: str):
     """SQL expression truncating ``LogEntry.timestamp`` to ``label``."""
     if dialect == "sqlite":
         return func.strftime(SQLITE_PATTERNS[label], LogEntry.timestamp)
-    return func.date_trunc(label, LogEntry.timestamp)
+    # Truncate in UTC explicitly: date_trunc on a timestamptz uses the
+    # session TimeZone, which would misalign keys with the UTC zero-fill
+    # grid (data rendered as zeros) whenever the DB timezone is not UTC.
+    return func.date_trunc(label, func.timezone("UTC", LogEntry.timestamp))
 
 
 def as_utc(value: object) -> datetime | None:

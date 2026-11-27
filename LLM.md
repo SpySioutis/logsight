@@ -149,8 +149,9 @@ logsight/
   Deterministic only — no AI/clustering, ever, without user approval.
   Rule changes alter stored fingerprints → `python -m app.refingerprint`
   (batched, idempotent, carries `error_group_states` to the new key).
-- **`timebuckets.py`**: `trunc_expr(dialect, label)` (`date_trunc` /
-  `strftime`), `as_utc()` key normalisation, `zero_filled()`. Every time
+- **`timebuckets.py`**: `trunc_expr(dialect, label)` (`date_trunc(label,
+  timezone('UTC', ts))` — explicit UTC, independent of the PG session
+  TimeZone — / `strftime`), `as_utc()` key normalisation, `zero_filled()`. Every time
   chart (dashboard timeline, error trend, explorer histogram) returns
   zero-filled buckets so x axes are linear in time.
 - **`parsers.py`**: yields `ParsedEntry(timestamp, severity, service,
