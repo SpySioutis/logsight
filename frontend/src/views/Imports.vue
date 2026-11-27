@@ -14,7 +14,7 @@
     <div
       class="dropzone"
       :class="{ over: dragging }"
-      @click="!uploading && fileInput?.click()"
+      @click="fileInput?.click()"
       @dragover.prevent="dragging = true"
       @dragleave="dragging = false"
       @drop.prevent="onDrop"
@@ -39,6 +39,7 @@
         </template>
         <template v-else>
           <div class="dz-title">Upload received — starting parse…</div>
+          <div v-if="queueTotal > 1" class="dz-sub">file {{ queueIndex }} of {{ queueTotal }}</div>
           <div class="progress-track" style="max-width: 420px; margin: 14px auto 0">
             <div class="progress-fill indeterminate"></div>
           </div>
@@ -247,31 +248,39 @@ async function uploadOne(file: File): Promise<Outcome> {
   }
 }
 
+/** Files waiting to be uploaded; drops during an upload are appended. */
+const pending: File[] = []
+
 /** Upload files one after another (imports are processed synchronously). */
 async function uploadAll(files: File[]) {
-  if (!files.length || uploading.value) return
+  if (!files.length) return
+  pending.push(...files)
+  queueTotal.value += files.length
+  if (uploading.value) return // the running loop picks them up
   uploading.value = true
   error.value = ''
   notice.value = ''
-  queueTotal.value = files.length
+  queueIndex.value = 0
   ensurePolling()
   const done: string[] = []
   const failed: string[] = []
   try {
-    for (const [i, file] of files.entries()) {
-      queueIndex.value = i + 1
+    let file: File | undefined
+    while ((file = pending.shift())) {
+      queueIndex.value += 1
       const outcome = await uploadOne(file)
       ;(outcome.ok ? done : failed).push(outcome.text)
       void refresh(true)
     }
   } finally {
+    const total = queueTotal.value
     uploading.value = false
     queueTotal.value = 0
     await refresh(true)
     maybeStopPolling()
+    notice.value = total === 1 ? done.join('') : done.length ? `${done.length} of ${total} files imported. ${done.join(' ')}` : ''
+    error.value = failed.join(' · ')
   }
-  notice.value = files.length === 1 ? done.join('') : done.length ? `${done.length} of ${files.length} files imported. ${done.join(' ')}` : ''
-  error.value = failed.join(' · ')
 }
 
 function axiosMessage(e: unknown): string {

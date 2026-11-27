@@ -280,7 +280,7 @@ with a helpful message, never 500. Pydantic `Literal` mismatches → 422.
   - `Traces.vue` (`/traces`, sidebar entry): recent-trace list with
     jump-to-ID box; links to detail.
   - `Imports.vue`: drag-and-drop / multi-select upload (files queued and
-    uploaded one at a time, `timeout: 0` because the request stays open for
+    uploaded one at a time; files added while an upload runs join the queue, `timeout: 0` because the request stays open for
     the whole synchronous parse) with progress, import history with
     view/delete. Accept list must match the backend allowlist.
   - `TraceView.vue` (`/traces/:id`): KPI stats + service waterfall
