@@ -97,12 +97,16 @@ export function localInputToIso(value: string): string {
   return Number.isNaN(d.getTime()) ? value : d.toISOString()
 }
 
-/** Format an instant as a `datetime-local` value in the user's timezone. */
-export function isoToLocalInput(iso: string): string {
+/**
+ * Format an instant as a `datetime-local` value in the user's timezone.
+ * `precise` keeps seconds and milliseconds (minute precision otherwise).
+ */
+export function isoToLocalInput(iso: string, precise = false): string {
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return iso
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+  const pad = (n: number, w = 2) => String(n).padStart(w, '0')
+  const base = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+  return precise ? `${base}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}` : base
 }
 
 /** Params for API calls: like `toParams`, with dates as UTC instants. */

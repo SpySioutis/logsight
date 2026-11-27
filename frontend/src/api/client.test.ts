@@ -47,3 +47,11 @@ describe('apiParams / exportUrl', () => {
     expect(params.has('page_size')).toBe(false)
   })
 })
+
+describe('isoToLocalInput precise', () => {
+  it('keeps seconds and milliseconds and round-trips through apiParams', () => {
+    const iso = new Date(2024, 4, 1, 10, 5, 59, 999).toISOString()
+    expect(isoToLocalInput(iso, true)).toBe('2024-05-01T10:05:59.999')
+    expect(localInputToIso(isoToLocalInput(iso, true))).toBe(iso)
+  })
+})

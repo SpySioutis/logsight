@@ -251,3 +251,15 @@ def test_compact_numeric_dates_are_not_epochs():
     assert ts(20240501123456).isoformat() == "2024-05-01T12:34:56+00:00"  # JSON number
     assert ts(202405011234).isoformat() == "2024-05-01T12:34:00+00:00"
     assert ts(1714557600123).year == 2024  # 13-digit ms epoch is not a compact date
+
+
+def test_access_log_prefix_words_are_not_levels():
+    from app.parsers import parse_plain_line
+
+    req = '"GET / HTTP/1.1" 200 1'
+    assert parse_plain_line(f"error.example.com 1.2.3.4 - - [01/May/2024:12:00:00 +0000] {req}").severity == "INFO"
+    assert parse_plain_line(f"1.2.3.4 - alert [01/May/2024:12:00:00 +0000] {req}").severity == "INFO"
+    assert parse_plain_line(f"1.2.3.4 - debug-user [01/May/2024:12:00:00 +0000] {req}").severity == "INFO"
+    # Explicit uppercase levels before the request still win.
+    assert parse_plain_line(f"[WARN] 1.2.3.4 - - [01/May/2024:12:00:00 +0000] {req}").severity == "WARN"
+    assert parse_plain_line(f'INFO "GET /health HTTP/1.1" 503').severity == "INFO"

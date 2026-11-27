@@ -253,8 +253,11 @@ function zoomTo(bucketStart: string) {
   const end = new Date(bucketStart)
   if (Number.isNaN(end.getTime())) return
   BUCKET_STEP[histogram.value.bucket]?.(end)
+  // date_to is inclusive (<=): stop 1 ms before the next bucket starts so
+  // entries exactly on that boundary are not pulled into this bucket.
+  end.setUTCMilliseconds(end.getUTCMilliseconds() - 1)
   query.date_from = isoToLocalInput(bucketStart)
-  query.date_to = isoToLocalInput(end.toISOString())
+  query.date_to = isoToLocalInput(end.toISOString(), true)
 }
 
 function scheduleReload() {

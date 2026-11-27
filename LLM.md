@@ -167,7 +167,10 @@ logsight/
   - Access logs (common/combined format): `"METHOD path HTTP/x" status`
     → attributes `http_method`/`http_path`/`http_status`; with no explicit
     level, severity comes from the status (5xx ERROR, 4xx WARNING, else
-    INFO).
+    INFO). An explicit level only counts *before* the quoted request and
+    only as a standalone uppercase word (`_ACCESS_LEVEL_RE`), so paths,
+    referrers, user agents, vhosts (`error.example.com`) and user names
+    never become severities.
   - `parse_timestamp()`: also CLF `[01/May/2024:12:00:00 +0200]` and
     slash dates `2024/05/01 12:00:00` (nginx error log, Go). JSON/CSV
     values additionally accept numeric-string epochs (s/ms/µs) and RFC 2822
@@ -268,7 +271,8 @@ with a helpful message, never 500. Pydantic `Literal` mismatches → 422.
     panels; `EmptyState` when total is 0.
   - `Explorer.vue`: full-width search `FilterBar` (debounced 350 ms,
     syncs URL query) + active-filter chips + sort/per-page toolbar +
-    `HistogramBars` (click = zoom date range) + CSV/JSONL export links +
+    `HistogramBars` (click = zoom date range; `date_to` is set 1 ms before
+    the next bucket because the filter is inclusive) + CSV/JSONL export links +
     `LogTable` + `Pagination` + `LogDetails` drawer + save-filter box.
     Restores every filter plus `sort`/`direction`/`page`/`page_size` from
     the route (so reloads, shared links and saved filters keep ordering).

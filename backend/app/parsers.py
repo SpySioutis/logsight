@@ -146,6 +146,13 @@ _ACCESS_RE = re.compile(
 )
 
 
+# Level inside an access-log prefix: uppercase, not glued to . - @ / or
+# word characters (so no hostnames, e-mails, paths or user names).
+_ACCESS_LEVEL_RE = re.compile(
+    r"(?<![\w.@/-])(?P<level>TRACE|DEBUG|INFO|NOTICE|WARN(?:ING)?|ERROR|ERR|FATAL|CRITICAL|CRIT|ALERT|EMERG(?:ENCY)?)(?![\w.@/-])"
+)
+
+
 def parse_plain_line(line: str) -> ParsedEntry:
     """Parse one plain-text log line; never raises on bad input."""
     syslog_entry = parse_syslog_line(line)
@@ -157,7 +164,13 @@ def parse_plain_line(line: str) -> ParsedEntry:
     # In access logs, only look for a level *before* the quoted request:
     # words in the path, referrer or user agent ("/api/error/report",
     # "/debug") are not severities.
-    level_match = _LEVEL_RE.search(text, 0, access.start() if access else len(text))
+    if access is None:
+        level_match = _LEVEL_RE.search(text)
+    else:
+        # Before the request sit host/vhost, ident and user fields: only an
+        # uppercase standalone word counts there ("error.example.com" or a
+        # user named "alert" must not become a severity).
+        level_match = _ACCESS_LEVEL_RE.search(text, 0, access.start())
     severity = normalize_severity(level_match.group("level")) if level_match else "UNKNOWN"
     attributes: dict[str, Any] = {}
     if access is not None:
