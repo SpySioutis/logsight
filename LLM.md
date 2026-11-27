@@ -202,7 +202,7 @@ logsight/
 | `GET /logs/{id}` | single entry (404) | — |
 | `GET /logs/meta/facets` | distinct severities/sources/services (capped 200) | — |
 | `GET /dashboard/summary|timeline|severity-distribution|top-sources|top-errors` | stats from stored data only | `bucket` hour/day, `limit` |
-| `GET /errors/groups` | fingerprint groups + lifecycle state | `limit`, `severity[]`, `status` (400 on invalid) |
+| `GET /errors/groups` | fingerprint groups + lifecycle state (status filtered in SQL before `limit`; sources batched in one query) | `limit`, `severity[]`, `status` (400 on invalid) |
 | `GET /errors/groups/{fp}` | paged entries (count query has NO order-by — PG rejects it) | `page`, `page_size` |
 | `PUT /errors/groups/{fp}/state` | upsert lifecycle state (404 if fp unknown) | `{status, assignee?, note?}`; bad status → 422 |
 | `GET /errors/groups/{fp}/trend` | per-bucket counts for sparkline | `bucket`, `limit` |

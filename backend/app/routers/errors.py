@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -38,7 +38,7 @@ def error_groups(
             status_code=400, detail=f"Invalid status. Use one of: {list(_STATUSES)}."
         )
     severities = list(severity) if severity else list(_ERROR_SEVERITIES)
-    rows = (
+    query = (
         db.query(
             LogEntry.fingerprint,
             func.min(LogEntry.message).label("sample"),
@@ -49,39 +49,57 @@ def error_groups(
         )
         .filter(LogEntry.severity.in_(severities))
         .filter(LogEntry.fingerprint.isnot(None))
-        .group_by(LogEntry.fingerprint)
-        .order_by(func.count(LogEntry.id).desc())
+    )
+    if status is not None:
+        # Filter by lifecycle state in SQL, *before* LIMIT: filtering the
+        # top-N afterwards silently dropped matching groups outside it.
+        # Missing state row means "open".
+        stated = select(ErrorGroupState.fingerprint)
+        if status == "open":
+            query = query.filter(
+                or_(
+                    LogEntry.fingerprint.notin_(stated),
+                    LogEntry.fingerprint.in_(stated.where(ErrorGroupState.status == "open")),
+                )
+            )
+        else:
+            query = query.filter(LogEntry.fingerprint.in_(stated.where(ErrorGroupState.status == status)))
+    rows = (
+        query.group_by(LogEntry.fingerprint)
+        .order_by(func.count(LogEntry.id).desc(), LogEntry.fingerprint)
         .limit(limit)
         .all()
     )
-    states = _states_map(db, [r.fingerprint for r in rows])
+    fingerprints = [r.fingerprint for r in rows if r.fingerprint]
+    states = _states_map(db, fingerprints)
+    # One query for all groups' sources instead of one per group.
+    sources_by_fp: dict[str, list[str]] = {}
+    if fingerprints:
+        source_rows = (
+            db.query(LogEntry.fingerprint, LogEntry.source)
+            .filter(LogEntry.fingerprint.in_(fingerprints))
+            .filter(LogEntry.source.isnot(None))
+            .distinct()
+            .order_by(LogEntry.fingerprint, LogEntry.source)
+            .all()
+        )
+        for fp, src in source_rows:
+            bucket = sources_by_fp.setdefault(fp, [])
+            if len(bucket) < 10:
+                bucket.append(src)
     groups: list[ErrorGroup] = []
     for r in rows:
         state = states.get(r.fingerprint or "")
-        effective_status = state.status if state else "open"
-        if status is not None and effective_status != status:
-            continue
-        sources = [
-            s[0]
-            for s in (
-                db.query(LogEntry.source)
-                .filter(LogEntry.fingerprint == r.fingerprint)
-                .filter(LogEntry.source.isnot(None))
-                .distinct()
-                .limit(10)
-                .all()
-            )
-        ]
         groups.append(
             ErrorGroup(
                 fingerprint=r.fingerprint or "",
                 sample=(r.sample or "")[:280],
                 severity=r.severity,
                 count=r.count,
-                sources=sources,
+                sources=sources_by_fp.get(r.fingerprint or "", []),
                 first_seen=r.first_seen,
                 last_seen=r.last_seen,
-                status=effective_status,
+                status=state.status if state else "open",
                 assignee=state.assignee if state else None,
                 note=state.note if state else None,
             )

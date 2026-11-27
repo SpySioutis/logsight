@@ -257,6 +257,8 @@ def test_trace_endpoints(client):
     assert len(listed) == 1
     assert listed[0]["trace_id"] == "t-9"
     assert listed[0]["count"] == 2
+    assert listed[0]["services"] == ["db", "web"]
+    assert listed[0]["severities"]
 
     detail = client.get("/api/traces/t-9").json()
     assert detail["count"] == 2
@@ -359,3 +361,20 @@ def test_recover_interrupted_imports(client, db_session):
     assert record["status"] == "failed"
     assert "interrupted" in record["error_message"]
     assert client.get("/api/logs").json()["total"] == 0
+
+
+def test_error_group_status_filter_applies_before_limit(client):
+    upload(client, "app.log", PLAIN_LOG)
+    groups = client.get("/api/errors/groups").json()
+    assert len(groups) == 2
+    # The smallest group, resolved, must be found even with limit=1.
+    smallest = min(groups, key=lambda g: g["count"])
+    client.put(f"/api/errors/groups/{smallest['fingerprint']}/state", json={"status": "resolved"})
+    resolved = client.get("/api/errors/groups", params={"status": "resolved", "limit": 1}).json()
+    assert [g["fingerprint"] for g in resolved] == [smallest["fingerprint"]]
+    open_groups = client.get("/api/errors/groups", params={"status": "open"}).json()
+    assert smallest["fingerprint"] not in [g["fingerprint"] for g in open_groups]
+    assert len(open_groups) == 1
+    # Sources are aggregated per group.
+    conn = next(g for g in groups if "connection refused" in g["sample"])
+    assert conn["sources"] == ["web-1", "web-2"]
