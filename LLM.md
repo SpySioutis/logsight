@@ -179,9 +179,17 @@ logsight/
   upfront; 0 = unknown, e.g. single-doc JSON) and per-batch `parsed_count`
   heartbeats are committed during the parse, so polling `GET /imports`
   sees percent-complete while `status` is `"processing"`.
+  Any failure mid-parse (`ValueError` → 422, decompressed-cap 413, or an
+  unexpected error) goes through `_mark_failed()`: rollback, delete the
+  rows already flushed for that import, `status: "failed"`. A failed
+  import therefore never leaves partial data behind.
 - **`migrate.py`**: applies `migrations/*.sql` in filename order inside
   one transaction per file, records versions in `schema_migrations`.
-  Idempotent; safe to run every boot.
+  Idempotent; safe to run every boot. After migrating, `recover()` calls
+  `recover_interrupted_imports()`: any import still `processing` at boot
+  (server crashed/restarted mid-upload) is marked `failed` and its partial
+  rows removed. Safe because imports only run inside the single API
+  process, which has not started yet.
 
 ### 4.2 Endpoint reference (all under `/api`)
 

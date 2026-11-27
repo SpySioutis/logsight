@@ -306,3 +306,56 @@ def test_error_group_lifecycle(client):
     client.put(f"/api/errors/groups/{fp}/state", json={"status": "muted"})
     top = client.get("/api/dashboard/top-errors").json()
     assert all(g["fingerprint"] != fp for g in top)
+
+
+def test_failed_zip_member_rolls_back_partial_rows(client, monkeypatch):
+    import zipfile
+
+    from app import import_service
+
+    # Tiny batches so the good member's rows are committed before the
+    # bad member fails; the failure must remove them again.
+    monkeypatch.setattr(import_service, "CHUNK_ROWS", 2)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("a.log", PLAIN_LOG.decode())
+        zf.writestr("b.json", "{not valid json")
+    resp = upload(client, "partial.zip", buf.getvalue())
+    assert resp.status_code == 422
+    assert client.get("/api/logs", params={"page_size": 1}).json()["total"] == 0
+    record = client.get("/api/imports").json()[0]
+    assert record["status"] == "failed"
+    assert record["parsed_count"] == 0
+
+
+def test_decompressed_cap_marks_import_failed(client, monkeypatch):
+    import gzip
+
+    from app import import_service
+
+    monkeypatch.setattr(import_service, "CHUNK_ROWS", 2)
+    # Raw upload fits, but the decompressed stream exceeds the cap.
+    monkeypatch.setattr(type(import_service.settings), "max_upload_bytes", property(lambda self: 600))
+    payload = PLAIN_LOG * 20
+    assert len(gzip.compress(payload)) < 600 < len(payload)
+    resp = upload(client, "big.log.gz", gzip.compress(payload))
+    assert resp.status_code == 413
+    record = client.get("/api/imports").json()[0]
+    assert record["status"] == "failed"
+    assert client.get("/api/logs", params={"page_size": 1}).json()["total"] == 0
+
+
+def test_recover_interrupted_imports(client, db_session):
+    from app.import_service import recover_interrupted_imports
+    from app.models import Import, LogEntry
+
+    stuck = Import(filename="x.log", file_size=1, file_hash="h" * 64, format="plaintext", status="processing")
+    db_session.add(stuck)
+    db_session.commit()
+    db_session.add(LogEntry(import_id=stuck.id, severity="INFO", message="partial"))
+    db_session.commit()
+    assert recover_interrupted_imports(db_session) == 1
+    record = client.get(f"/api/imports/{stuck.id}").json()
+    assert record["status"] == "failed"
+    assert "interrupted" in record["error_message"]
+    assert client.get("/api/logs").json()["total"] == 0

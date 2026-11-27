@@ -68,6 +68,11 @@ Migrations run automatically every time the backend container starts
 in `schema_migrations` and skipped. To apply them manually against a running
 stack, see §11.
 
+The same boot step also cleans up imports interrupted by a crash or restart:
+anything still in `processing` is marked `failed` (with an explanatory
+message) and its partially loaded rows are removed. A failed import never
+leaves partial data behind — simply upload the file again.
+
 Note: `0004_search.sql` builds a GIN index over all stored rows. On tables
 with millions of entries this one-time build can take several minutes, during
 which the backend stays unhealthy and the API is unavailable. Let it finish;

@@ -47,9 +47,26 @@ def run() -> list[str]:
     return applied
 
 
+def recover() -> int:
+    """Boot-time cleanup of imports interrupted by a crash or restart."""
+    # Imported lazily: the migration runner must work before the ORM schema exists.
+    from app.database import SessionLocal
+    from app.import_service import recover_interrupted_imports
+
+    with SessionLocal() as db:
+        count = recover_interrupted_imports(db)
+    if count:
+        print(f"marked {count} interrupted import(s) as failed")
+    return count
+
+
 if __name__ == "__main__":
     try:
         run()
     except Exception as exc:  # noqa: BLE001 - startup must show the real error
         print(f"migration failed: {exc}", file=sys.stderr)
         raise
+    try:
+        recover()
+    except Exception as exc:  # noqa: BLE001 - never block startup on cleanup
+        print(f"import recovery skipped: {exc}", file=sys.stderr)
