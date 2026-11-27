@@ -21,6 +21,7 @@ from app.search import (
     ParsedQuery,
     apply_field_filters,
     apply_ilike_search,
+    contains_ci,
     highlight_snippet,
     parse_search_query,
 )
@@ -91,9 +92,9 @@ def apply_filters(
         wanted = {normalize_severity(s) for s in severities if s}
         query = query.filter(LogEntry.severity.in_(sorted(wanted)))
     if source:
-        query = query.filter(LogEntry.source.ilike(f"%{source}%"))
+        query = query.filter(contains_ci(LogEntry.source, source))
     if service:
-        query = query.filter(LogEntry.service.ilike(f"%{service}%"))
+        query = query.filter(contains_ci(LogEntry.service, service))
     if import_id:
         query = query.filter(LogEntry.import_id == import_id)
     if trace_id:

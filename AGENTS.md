@@ -66,6 +66,8 @@ framework, database or AI service may be introduced silently.
   the `ix_log_entries_search` expression GIN index (byte-identical expression
   in `routers/logs.py`), SQLite uses the `ILIKE` emulation so tests stay
   portable. Snippets are HTML-escaped Python-side with `<mark>` hits only.
+  Substring matches go through `search.contains_ci()` (escapes `%`/`_`,
+  single bound `ILIKE` pattern) — never build `ilike(f"%{value}%")`.
   PG free-text matching runs in an `id IN (SELECT … OFFSET 0)` subquery — the
   OFFSET is load-bearing (blocks a catastrophic plan flattening); verify with
   EXPLAIN on a large table before touching it.

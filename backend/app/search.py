@@ -99,21 +99,31 @@ def parse_search_query(raw: str | None) -> ParsedQuery:
     return parsed
 
 
+def contains_ci(column, value: str):
+    """Case-insensitive substring match treating ``value`` literally.
+
+    ``%`` and ``_`` in user input are escaped (otherwise ``web_1`` also
+    matched ``web-1`` and ``%`` matched everything). Kept as one bound
+    ``ILIKE`` pattern so PostgreSQL can still use the trigram index.
+    """
+    escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return column.ilike(f"%{escaped}%", escape="\\")
+
+
 def _text_columns_contain(value: str):
-    like = f"%{value}%"
     return or_(
-        LogEntry.message.ilike(like),
-        LogEntry.source.ilike(like),
-        LogEntry.service.ilike(like),
+        contains_ci(LogEntry.message, value),
+        contains_ci(LogEntry.source, value),
+        contains_ci(LogEntry.service, value),
     )
 
 
 def apply_field_filters(query: Query, parsed: ParsedQuery) -> Query:
     for name, value in parsed.field_filters.items():
         if name == "service":
-            query = query.filter(LogEntry.service.ilike(f"%{value}%"))
+            query = query.filter(contains_ci(LogEntry.service, value))
         elif name == "source":
-            query = query.filter(LogEntry.source.ilike(f"%{value}%"))
+            query = query.filter(contains_ci(LogEntry.source, value))
         elif name == "severity":
             query = query.filter(LogEntry.severity == normalize_severity(value))
         elif name == "trace_id":
@@ -123,9 +133,9 @@ def apply_field_filters(query: Query, parsed: ParsedQuery) -> Query:
     for name, values in parsed.exclude_field_filters.items():
         for value in values:
             if name == "service":
-                query = query.filter(not_(LogEntry.service.ilike(f"%{value}%")))
+                query = query.filter(not_(contains_ci(LogEntry.service, value)))
             elif name == "source":
-                query = query.filter(not_(LogEntry.source.ilike(f"%{value}%")))
+                query = query.filter(not_(contains_ci(LogEntry.source, value)))
             elif name == "severity":
                 query = query.filter(LogEntry.severity != normalize_severity(value))
             elif name == "trace_id":

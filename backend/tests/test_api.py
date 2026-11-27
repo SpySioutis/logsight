@@ -504,3 +504,19 @@ def test_refingerprint_merges_groups_and_keeps_state(client, db_session):
     assert len(groups) == 1 and groups[0]["count"] == 2
     assert groups[0]["status"] == "acknowledged" and groups[0]["assignee"] == "ops"
     assert refingerprint(db_session) == (2, 0)  # idempotent
+
+
+def test_like_wildcards_in_filters_are_literal(client):
+    log = (
+        b"2024-05-01T10:00:00Z INFO service:api source:web_1 underscore host\n"
+        b"2024-05-01T10:01:00Z INFO service:api source:web-1 dash host\n"
+        b"2024-05-01T10:02:00Z INFO service:api source:web-2 rate 100% reached\n"
+    )
+    upload(client, "wild.log", log)
+    total = lambda **p: client.get("/api/logs", params=p).json()["total"]  # noqa: E731
+    assert total(source="web_1") == 1
+    assert total(source="%") == 0
+    assert total(q="source:web_1") == 1
+    assert total(q="100%") == 1
+    assert total(q="-source:web_1") == 2
+    assert total(source="WEB") == 3  # still case-insensitive
