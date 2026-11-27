@@ -195,3 +195,32 @@ def test_yearless_syslog_dates():
     recent = parse_timestamp("Dec 31 23:59:59 host app: x")
     assert recent is not None and recent <= datetime.now(timezone.utc)
     assert recent.year >= datetime.now(timezone.utc).year - 1
+
+
+def test_access_log_lines():
+    from app.parsers import parse_plain_line
+
+    e = parse_plain_line('127.0.0.1 - - [01/May/2024:12:00:00 +0200] "GET /api?x=1 HTTP/1.1" 503 512 "-" "curl/8"')
+    assert e.timestamp is not None and e.timestamp.isoformat() == "2024-05-01T12:00:00+02:00"
+    assert e.severity == "ERROR"
+    assert e.attributes == {"http_method": "GET", "http_path": "/api?x=1", "http_status": 503}
+    assert parse_plain_line('1.2.3.4 - - [01/May/2024:12:00:01 +0000] "POST /login HTTP/2.0" 401 0').severity == "WARNING"
+    assert parse_plain_line('1.2.3.4 - - [01/May/2024:12:00:02 +0000] "GET / HTTP/1.1" 200 10').severity == "INFO"
+    # An explicit level wins over the status code.
+    assert parse_plain_line('INFO "GET /health HTTP/1.1" 503').severity == "INFO"
+
+
+def test_slash_dated_and_epoch_string_timestamps():
+    import json
+
+    from app.parsers import parse_json_line, parse_plain_line
+
+    assert parse_plain_line("2024/05/01 12:00:00 [error] 1#0: connect() failed").timestamp is not None
+    for value, expected in (
+        ("1714557600", "2024-05-01T10:00:00+00:00"),
+        ("1714557600123", "2024-05-01T10:00:00.123000+00:00"),
+        ("Wed, 01 May 2024 12:00:00 GMT", "2024-05-01T12:00:00+00:00"),
+    ):
+        entry = parse_json_line(json.dumps({"timestamp": value, "msg": "x"}), 1)
+        assert entry is not None and entry.timestamp is not None
+        assert entry.timestamp.isoformat() == expected, value

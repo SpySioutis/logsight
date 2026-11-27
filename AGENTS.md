@@ -47,7 +47,7 @@ frontend/
     views/             # Dashboard, Explorer, Errors, Traces, Imports, SavedFilters, Settings, TraceView
     router/index.ts
 samples/               # app.log, app.jsonl, structured.json, events.csv,
-                       # syslog.log, trace.jsonl (manual testing)
+                       # syslog.log, trace.jsonl, access.log (manual testing)
 ```
 
 ## Technology stack (preferred stack — do not change without user approval)

@@ -11,6 +11,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import IO, Any, Iterator
 
 from app.grouping import fingerprint
@@ -48,6 +49,10 @@ _TS_PATTERNS: list[tuple[re.Pattern[str], str | None]] = [
     (re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}(?::?\d{2})?\b)?"), None),
     # 2024-05-01 12:34:56,789
     (re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:[.,]\d+)?"), "%Y-%m-%d %H:%M:%S"),
+    # Common/combined log format (nginx/Apache access): [01/May/2024:12:34:56 +0200]
+    (re.compile(r"\d{2}/[A-Z][a-z]{2}/\d{4}:\d{2}:\d{2}:\d{2} [+-]\d{4}"), "%d/%b/%Y:%H:%M:%S %z"),
+    # nginx error log / Go log package: 2024/05/01 12:34:56
+    (re.compile(r"\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}(?:[.,]\d+)?"), "%Y/%m/%d %H:%M:%S"),
     # Syslog: May  1 12:34:56
     (re.compile(r"[A-Z][a-z]{2}\s+\d{1,2} \d{2}:\d{2}:\d{2}"), "%b %d %H:%M:%S"),
     # Epoch seconds / millis at line start.
@@ -118,7 +123,7 @@ def parse_timestamp(text: str) -> datetime | None:
                     continue
                 if yearless:
                     parsed = _most_recent_year(parsed)
-                return parsed.replace(tzinfo=timezone.utc)
+                return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
     return None
 
 
@@ -135,6 +140,12 @@ _KV_RE = re.compile(
 )
 
 
+# Common/combined access-log request + status: "GET /path HTTP/1.1" 503
+_ACCESS_RE = re.compile(
+    r'"(?P<method>GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|CONNECT|TRACE) (?P<path>\S+) HTTP/[\d.]+" (?P<status>[1-5]\d{2})\b'
+)
+
+
 def parse_plain_line(line: str) -> ParsedEntry:
     """Parse one plain-text log line; never raises on bad input."""
     syslog_entry = parse_syslog_line(line)
@@ -144,6 +155,18 @@ def parse_plain_line(line: str) -> ParsedEntry:
     text = line.strip()
     level_match = _LEVEL_RE.search(text)
     severity = normalize_severity(level_match.group("level")) if level_match else "UNKNOWN"
+    attributes: dict[str, Any] = {}
+    access = _ACCESS_RE.search(text)
+    if access is not None:
+        status = int(access.group("status"))
+        attributes = {
+            "http_method": access.group("method"),
+            "http_path": access.group("path")[:2048],
+            "http_status": status,
+        }
+        if level_match is None:
+            # Access logs carry no level: derive it from the status code.
+            severity = "ERROR" if status >= 500 else "WARNING" if status >= 400 else "INFO"
     timestamp = parse_timestamp(text)
     service: str | None = None
     source: str | None = None
@@ -168,7 +191,7 @@ def parse_plain_line(line: str) -> ParsedEntry:
         source=source,
         message=message,
         raw=raw,
-        attributes={},
+        attributes=attributes,
         trace_id=trace_id,
         request_id=request_id,
     )
@@ -321,11 +344,25 @@ def _coerce_timestamp(value: Any) -> datetime | None:
         except (OverflowError, OSError, ValueError):
             return None
     if isinstance(value, str):
-        parsed = _parse_iso(value)
+        stripped = value.strip()
+        if _NUMERIC.fullmatch(stripped):
+            # CSV delivers every value as text: "1714557600" is an epoch.
+            return _coerce_timestamp(float(stripped))
+        parsed = _parse_iso(stripped)
         if parsed is not None:
             return parsed
-        return parse_timestamp(value)
+        parsed = parse_timestamp(stripped)
+        if parsed is not None:
+            return parsed
+        try:  # RFC 2822 / HTTP dates: "Wed, 01 May 2024 12:00:00 GMT"
+            parsed = parsedate_to_datetime(stripped)
+        except (TypeError, ValueError, IndexError):
+            return None
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
     return None
+
+
+_NUMERIC = re.compile(r"\d{9,16}(?:\.\d+)?")
 
 
 def parse_json_object(obj: dict[str, Any], raw: str) -> ParsedEntry:

@@ -53,3 +53,12 @@ def test_number_length_does_not_split_groups():
 def test_hex_ids_still_masked():
     assert fingerprint("job 3fa9c2e1 failed") == fingerprint("job 9bc0d1e2 failed")
     assert normalize_message("ptr 0xdeadbeef commit a1b2c3d") == "ptr <hex> commit <hex>"
+
+
+def test_access_log_timestamps_masked():
+    a = '10.0.0.1 - - [01/May/2024:12:00:00 +0200] "GET /api/users/42 HTTP/1.1" 503 12'
+    b = '10.0.0.9 - - [17/Jun/2024:08:30:59 +0200] "GET /api/users/77 HTTP/1.1" 503 99'
+    assert fingerprint(a) == fingerprint(b)
+    assert fingerprint("2024/05/01 12:00:00 [error] connect() failed") == fingerprint(
+        "2024/06/17 08:30:59 [error] connect() failed"
+    )

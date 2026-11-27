@@ -27,8 +27,8 @@ migrations, δοκιμές και αντιμετώπιση προβλημάτω�
 
 ## Δυνατότητες
 
-- **Εισαγωγή logs** — απλό κείμενο (`.log`, `.txt`, συμπ. syslog RFC 5424 και
-  πολυγραμμικά stacktraces), JSON Lines (`.jsonl`, `.ndjson`), δομημένο JSON
+- **Εισαγωγή logs** — απλό κείμενο (`.log`, `.txt`, συμπ. syslog RFC 5424, access/error
+  logs nginx/Apache και πολυγραμμικά stacktraces), JSON Lines (`.jsonl`, `.ndjson`), δομημένο JSON
   (`.json`) και CSV (`.csv`)· γίνονται δεκτά gzip (`.gz`) και πακέτα (`.zip`)·
   ανάλυση με ροή (streaming), μαζική φόρτωση μέσω COPY (PostgreSQL),
   ζωντανό ποσοστό προόδου, όριο 1 GB (προεπιλογή, για
