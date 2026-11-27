@@ -62,6 +62,12 @@ Docker volume. Schema is created by versioned SQL migrations, not by the ORM:
 - `backend/migrations/0004_search.sql` — expression GIN index
   `ix_log_entries_search` for ranked full-text search (no heap changes).
 - `backend/migrations/0005_error_states.sql` — `error_group_states` lifecycle table.
+- `backend/migrations/0006_dashboard_indexes.sql` — composite covering indexes
+  for dashboard aggregates.
+- `backend/migrations/0007_entry_seq.sql` — nullable `seq` column (original
+  file order per import, metadata-only `ADD COLUMN`) + `(import_id, seq)`
+  index for the "surrounding lines" view. Entries imported earlier keep
+  `seq` NULL and fall back to timestamp order.
 
 Migrations run automatically every time the backend container starts
 (`python -m app.migrate` before uvicorn); already-applied files are recorded
@@ -138,7 +144,7 @@ docker compose exec backend python -m app.migrate
 
 ## 12. How to run tests
 
-Backend (54 tests: severity, parsers, grouping, search + API integration on isolated SQLite):
+Backend (68 tests: severity, parsers, grouping, search + API integration on isolated SQLite):
 
 ```sh
 cd backend
@@ -146,7 +152,7 @@ uv sync
 uv run pytest -q
 ```
 
-Frontend (12 vitest tests: severity/format/highlight utils, API param builder):
+Frontend (17 vitest tests: severity/format/highlight utils, API param builder, date conversion, export URL):
 
 ```sh
 cd frontend
@@ -183,6 +189,23 @@ docker compose exec db pg_dump -U logsight logsight > logsight-backup.sql
 cat logsight-backup.sql | docker compose exec -T db psql -U logsight -d logsight
 ```
 
+## 14a. Upgrading: re-fingerprinting stored errors
+
+Error groups are keyed by a deterministic fingerprint of the message. When
+the normalisation rules change (e.g. timestamps inside messages are now
+masked, so one error no longer splits into a group per hour of day), rows
+imported before the upgrade keep their old fingerprints and will not merge
+with newly imported ones. Recompute them once:
+
+```sh
+docker compose exec backend python -m app.refingerprint
+```
+
+It only touches rows that have a fingerprint (error-like severities), works
+in batches of 5,000 committed one by one, is idempotent, and carries each
+group's lifecycle state (status / assignee / note) over to the new
+fingerprint. Roughly 3,000 rows/s; the API stays available while it runs.
+
 ## 15. Troubleshooting
 
 | Symptom | Cause / fix |
@@ -195,6 +218,8 @@ cat logsight-backup.sql | docker compose exec -T db psql -U logsight -d logsight
 | `400 Unsupported file type` | Use `.log`, `.txt`, `.jsonl`, `.ndjson`, `.json`, `.csv`, `.gz` or `.zip`. |
 | `422` on a `.zip` upload | The archive holds no supported log files, or a member is corrupt — check the `detail` message. |
 | Blank dashboard | No logs imported yet — upload a file in Imports (try `samples/app.log`). |
+| Same error split into many groups after upgrading | Data imported before the timestamp-aware fingerprint rules: run `docker compose exec backend python -m app.refingerprint` once (see §14a). |
+| Import shows `failed` with "interrupted" | The server restarted mid-upload; the partial rows were removed at boot. Upload the file again. |
 | Frontend `Could not load…` errors | Backend unreachable: `curl http://localhost:8000/api/health`; check `docker compose ps`. |
 
 ## 16. Security notes

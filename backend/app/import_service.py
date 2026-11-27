@@ -97,6 +97,7 @@ _COPY_COLUMNS = (
     "fingerprint",
     "trace_id",
     "request_id",
+    "seq",
     "created_at",
 )
 
@@ -130,6 +131,7 @@ def _copy_flush(db: Session, import_id: str, batch: list[dict]) -> None:
                 row["fingerprint"],
                 row["trace_id"],
                 row["request_id"],
+                row["seq"],
                 now,
             ]
         )
@@ -148,8 +150,9 @@ def _copy_flush(db: Session, import_id: str, batch: list[dict]) -> None:
     db.commit()
 
 
-def _row(entry: parsers.ParsedEntry) -> dict:
+def _row(entry: parsers.ParsedEntry, seq: int) -> dict:
     return {
+        "seq": seq,
         "id": str(uuid.uuid4()),
         "timestamp": entry.timestamp,
         "severity": entry.severity,
@@ -283,8 +286,8 @@ class _Parser:
             self._record.error_count = self.errors
 
     def add(self, entry: parsers.ParsedEntry) -> None:
-        self.batch.append(_row(entry))
         self.parsed += 1
+        self.batch.append(_row(entry, self.parsed))
         if len(self.batch) >= CHUNK_ROWS:
             self._sync_progress()
             _flush(self._db, self._import_id, self.batch)

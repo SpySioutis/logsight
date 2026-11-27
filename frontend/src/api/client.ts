@@ -36,6 +36,7 @@ export interface LogEntry {
   fingerprint: string | null
   trace_id: string | null
   request_id: string | null
+  seq?: number | null
   snippet?: string | null
 }
 
@@ -79,6 +80,59 @@ export function toParams(query: LogQuery): Record<string, string | string[]> {
   if (query.page) params.page = String(query.page)
   if (query.page_size) params.page_size = String(query.page_size)
   return params
+}
+
+const LOCAL_INPUT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/
+
+/**
+ * `datetime-local` values carry no offset; the backend would read them as
+ * UTC. Convert them to the instant the user meant (their local time).
+ * Values that already carry an offset/`Z` pass through unchanged.
+ */
+export function localInputToIso(value: string): string {
+  if (!LOCAL_INPUT.test(value)) return value
+  const d = new Date(value)
+  return Number.isNaN(d.getTime()) ? value : d.toISOString()
+}
+
+/** Format an instant as a `datetime-local` value in the user's timezone. */
+export function isoToLocalInput(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+/** Params for API calls: like `toParams`, with dates as UTC instants. */
+export function apiParams(query: LogQuery): Record<string, string | string[]> {
+  const params = toParams(query)
+  if (typeof params.date_from === 'string') params.date_from = localInputToIso(params.date_from)
+  if (typeof params.date_to === 'string') params.date_to = localInputToIso(params.date_to)
+  return params
+}
+
+/** Download URL for the current explorer filters (all pages, capped server-side). */
+export function exportUrl(query: LogQuery, format: 'csv' | 'jsonl'): string {
+  const params = apiParams(query)
+  delete params.page
+  delete params.page_size
+  const search = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    for (const v of Array.isArray(value) ? value : [value]) search.append(key, v)
+  }
+  search.set('format', format)
+  return `${baseURL}/logs/export?${search.toString()}`
+}
+
+export interface LogHistogram {
+  bucket: 'minute' | 'hour' | 'day' | 'month'
+  points: TimelinePoint[]
+}
+
+export interface LogContext {
+  entry: LogEntry
+  before: LogEntry[]
+  after: LogEntry[]
 }
 
 export interface DashboardSummary {

@@ -22,8 +22,11 @@ Feature summary (v1 + search/traces/lifecycle release):
 - **Explorer**: server-side search with a query language (`"exact phrase"`,
   `-exclude`, `service:`/`source:`/`severity:`/`trace:`/`request:`), plus
   severity/source/service/trace/request/date filters, sorting (incl.
-  relevance), pagination, highlighted `<mark>` snippets.
-- **Dashboard**: totals, severity distribution, logs-over-time, top sources,
+  relevance), pagination, highlighted `<mark>` snippets, result-set volume
+  histogram (click a bar to zoom the date range), CSV/JSONL export of all
+  matches (≤100k), entry drawer with surrounding lines in original file order.
+- **Dashboard**: totals, severity distribution, logs-over-time (All =
+  adaptive full history, Day/Hour = last 60 buckets, zero-filled), top sources,
   top errors (muted groups excluded).
 - **Errors**: deterministic fingerprint grouping with open/acknowledged/
   resolved/muted lifecycle, assignee, note, per-group trend sparkline.
@@ -75,24 +78,26 @@ logsight/
 │   │   ├── schemas.py         # Pydantic v2 request/response models
 │   │   ├── severity.py        # canonical severities + normalize_severity() (never discards)
 │   │   ├── grouping.py        # normalize_message() + fingerprint() (SHA-256, 32 hex chars)
+│   │   ├── refingerprint.py   # maintenance: recompute stored fingerprints + carry lifecycle state
+│   │   ├── timebuckets.py     # portable bucketing (date_trunc / strftime) + zero-fill helpers
 │   │   ├── parsers.py         # streaming parsers -> ParsedEntry (never raise on line content)
 │   │   ├── search.py          # q-language parser, SQLite ILIKE emulation, snippet highlighting
 │   │   ├── import_service.py  # upload -> temp+hash -> decompress -> parse -> batch insert
-│   │   ├── migrate.py         # versioned *.sql runner via schema_migrations table
+│   │   ├── migrate.py         # versioned *.sql runner via schema_migrations table + interrupted-import recovery
 │   │   └── routers/           # health, imports, logs, dashboard, errors, filters, traces
-│   ├── migrations/            # 0001_initial … 0005_error_states (see §6)
-│   ├── tests/                 # pytest, 54 tests, isolated in-memory SQLite per test
+│   ├── migrations/            # 0001_initial … 0007_entry_seq (see §6)
+│   ├── tests/                 # pytest, 68 tests, isolated in-memory SQLite per test
 │   ├── pyproject.toml + uv.lock
 │   └── .venv/                 # local env (gitignored), created by `uv sync`
 ├── frontend/
 │   ├── src/
-│   │   ├── api/client.ts      # axios instance, all shared TS interfaces, toParams()
-│   │   ├── utils/             # severity.ts, format.ts, highlight.ts (+ *.test.ts, 12 tests)
+│   │   ├── api/client.ts      # axios instance, shared TS interfaces, toParams(), apiParams() (local→UTC dates), exportUrl()
+│   │   ├── utils/             # severity.ts, format.ts, highlight.ts (+ *.test.ts; 17 vitest tests incl. api/client.test.ts)
 │   │   ├── stores/settings.ts # Pinia: theme + pageSize + sidebar, persisted to localStorage
 │   │   ├── assets/styles.css  # design system: dark-first tokens, light theme, all components
 │   │   ├── components/        # AppIcon (inline Lucide set), SeverityBadge, StatusBadge,
 │   │   │                      # FilterBar, LogTable, LogDetails, Pagination, StatCard,
-│   │   │                      # TimeChart, TrendSpark, EmptyState, PageHeader, TableSkeleton
+│   │   │                      # TimeChart, HistogramBars, TrendSpark, EmptyState, PageHeader, TableSkeleton
 │   │   ├── views/             # Dashboard, Explorer, Errors, Traces, Imports, SavedFilters,
 │   │   │                      # Settings, TraceView
 │   │   ├── router/index.ts    # /, /logs, /errors, /traces, /imports, /filters, /settings, /traces/:id
@@ -135,9 +140,19 @@ logsight/
   …), numeric levels (Python logging thresholds), numeric strings;
   anything else → `UNKNOWN`. **Never** raise or drop on unknown input.
 - **`grouping.py`**: `normalize_message()` lowercases and masks volatile
-  tokens (`<uuid> <ip> <hex> <n>`, long quoted strings) so recurring errors
-  share one `fingerprint()` (SHA-256 hex, truncated to 32 chars).
+  tokens (`<ts>` for ISO / syslog / clock timestamps — applied first, since
+  in `2024-05-01t10:00` the hour is glued to the `t` and escapes the
+  `\b`-anchored number rules — then `<uuid> <ip> <hex> <n>`, long quoted
+  strings) so recurring errors share one `fingerprint()` (SHA-256 hex,
+  truncated to 32 chars). Plaintext messages keep the full line (timestamp
+  and level included), so timestamp masking is essential.
   Deterministic only — no AI/clustering, ever, without user approval.
+  Rule changes alter stored fingerprints → `python -m app.refingerprint`
+  (batched, idempotent, carries `error_group_states` to the new key).
+- **`timebuckets.py`**: `trunc_expr(dialect, label)` (`date_trunc` /
+  `strftime`), `as_utc()` key normalisation, `zero_filled()`. Every time
+  chart (dashboard timeline, error trend, explorer histogram) returns
+  zero-filled buckets so x axes are linear in time.
 - **`parsers.py`**: yields `ParsedEntry(timestamp, severity, service,
   source, message, raw, attributes, fingerprint, trace_id, request_id)`.
   - `parse_plain_line()`: never raises; tries RFC 5424 syslog first, then
@@ -199,13 +214,16 @@ logsight/
 | `POST /imports/upload` | multipart upload → 201 (or 400/413/422) | `file`; errors: 400 type, 413 size, 422 parse failure |
 | `GET /imports`, `GET /imports/{id}`, `DELETE /imports/{id}` | history / detail / delete (204, cascades to entries) | — |
 | `GET /logs` | explorer page | `q`, `severity[]`, `source`, `service`, `import_id`, `trace_id`, `request_id`, `date_from/to`, `sort` (timestamp/severity/source/service/**relevance**), `direction`, `page`, `page_size` (≤500) |
+| `GET /logs/export` | stream all matches as CSV or JSONL (attachment); one `yield_per` server-side-cursor query, ≤100k rows; CSV cells starting `= + - @` get a `'` prefix | same filters as `/logs` + `format` (csv/jsonl, 400 otherwise), `sort`, `direction`, `limit` |
+| `GET /logs/histogram` | zero-filled counts (total + errors) over time for the filters; bucket adapts to span: ≤3 h minute, ≤7 d hour, ≤365 d day, else month (≤400 points) | same filters as `/logs` |
 | `GET /logs/{id}` | single entry (404) | — |
+| `GET /logs/{id}/context` | surrounding entries of the same import by `seq` (file order); pre-0007 rows (`seq` NULL) fall back to `(timestamp, id)` | `before`, `after` (0–200, default 10) |
 | `GET /logs/meta/facets` | distinct severities/sources/services (capped 200) | — |
-| `GET /dashboard/summary|timeline|severity-distribution|top-sources|top-errors` | stats from stored data only | `bucket` hour/day, `limit` |
+| `GET /dashboard/summary|timeline|severity-distribution|top-sources|top-errors` | stats from stored data only; `timeline` = last `limit` calendar buckets ending at the newest entry (never before the oldest), zero-filled | `bucket` hour/day, `limit` |
 | `GET /errors/groups` | fingerprint groups + lifecycle state (status filtered in SQL before `limit`; sources batched in one query) | `limit`, `severity[]`, `status` (400 on invalid) |
 | `GET /errors/groups/{fp}` | paged entries (count query has NO order-by — PG rejects it) | `page`, `page_size` |
 | `PUT /errors/groups/{fp}/state` | upsert lifecycle state (404 if fp unknown) | `{status, assignee?, note?}`; bad status → 422 |
-| `GET /errors/groups/{fp}/trend` | per-bucket counts for sparkline | `bucket`, `limit` |
+| `GET /errors/groups/{fp}/trend` | zero-filled per-bucket counts for sparkline; window ends at the newest entry overall (trailing zeros = error stopped) | `bucket`, `limit` |
 | `GET /traces` | recent trace summaries | `limit` |
 | `GET /traces/{id}` | timeline (matches `trace_id` OR `request_id`, 404) | entries capped at 500, asc order |
 | `GET/POST /filters`, `GET/PUT/DELETE /filters/{id}` | saved filters (409 on name clash) | `{name, description?, params}` |
@@ -229,12 +247,15 @@ with a helpful message, never 500. Pydantic `Literal` mismatches → 422.
   in place via `Object.assign` (see `Explorer.vue:onQueryUpdate`).
 - **Views**:
   - `Dashboard.vue`: KPI stat cards + smooth `TimeChart` area chart
-    (day/hour toggle) + clickable severity/source/error breakdown
+    (All/Day/Hour toggle; All uses `/logs/histogram`) + clickable severity/source/error breakdown
     panels; `EmptyState` when total is 0.
   - `Explorer.vue`: full-width search `FilterBar` (debounced 350 ms,
     syncs URL query) + active-filter chips + sort/per-page toolbar +
+    `HistogramBars` (click = zoom date range) + CSV/JSONL export links +
     `LogTable` + `Pagination` + `LogDetails` drawer + save-filter box.
-    Reads `trace_id`/`request_id`/`import_id` from route.
+    Restores every filter plus `sort`/`direction`/`page`/`page_size` from
+    the route (so reloads, shared links and saved filters keep ordering).
+    API calls use `apiParams()` (dates → UTC); the URL keeps local dates.
   - `Errors.vue`: status segmented filter + groups table
     (severity/status badges) + detail panel with lifecycle editor,
     `TrendSpark`, entries table.
@@ -251,10 +272,12 @@ with a helpful message, never 500. Pydantic `Literal` mismatches → 422.
 - **Components**: `LogTable` renders `entry.snippet` via `v-html` after
   `sanitizeSnippet()` (in `utils/highlight.ts`: strips every tag except
   `<mark>`), shows first line of multiline messages + `trace:` chip link;
-  `LogDetails` drawer links trace/request ids to `/traces/:id`;
+  `LogDetails` drawer links trace/request ids to `/traces/:id` and shows
+  "surrounding lines" (`/logs/{id}/context`); clicking one navigates
+  inside the drawer (`current` ref), so every view using it gets this;
   `TimeChart` is a dependency-free smooth SVG area chart with hover
   crosshair; `TrendSpark` is a dependency-free SVG area sparkline.
-- **Tests**: 12 vitest tests (`client.test.ts`, `severity.test.ts`,
+- **Tests**: 17 vitest tests (`client.test.ts`, `severity.test.ts`,
   `format.test.ts`, `highlight.test.ts`). Node ≥22 required
   (`nvm use 22` — system node may be ancient).
 
@@ -270,6 +293,7 @@ Migrations (never edit an applied one; new change = new numbered file):
 | `0004_search.sql` | expression GIN index `ix_log_entries_search` over `to_tsvector('english', message ‖ service ‖ source ‖ trace_id ‖ request_id)` |
 | `0005_error_states.sql` | `error_group_states(fingerprint PK, status CHECK, assignee, note, updated_at)` |
 | `0006_dashboard_indexes.sql` | composite covering indexes `ix_log_entries_timestamp_severity(timestamp DESC, severity)` (timeline index-only scans) + `ix_log_entries_severity_fingerprint(severity, fingerprint)` (top-errors). Index-only build, no heap rewrite |
+| `0007_entry_seq.sql` | nullable `seq BIGINT` (metadata-only ADD COLUMN) + `ix_log_entries_import_seq(import_id, seq)`; importer numbers entries 1..n per import (continuing across zip members) |
 
 Critical database rules (several were learned the hard way on a 5.8M-row,
 7.6 GB production table — do not regress them):
@@ -344,11 +368,11 @@ docker compose up --build -d               # detached
 docker compose logs -f backend             # API logs (watch migrations here)
 docker compose exec backend python -m app.migrate   # manual migration run
 
-cd backend && uv sync && uv run pytest -q  # 54 tests (uv-managed, .venv local)
+cd backend && uv sync && uv run pytest -q  # 68 tests (uv-managed, .venv local)
 cd backend && uv run uvicorn app.main:app --reload  # local API (needs PG + DATABASE_URL)
 
 cd frontend && npm install && npm run dev  # Vite, /api proxied to :8000
-cd frontend && npm test                    # 12 vitest tests (needs node ≥22)
+cd frontend && npm test                    # 17 vitest tests (needs node ≥22)
 cd frontend && npm run build               # typecheck + production bundle
 ```
 

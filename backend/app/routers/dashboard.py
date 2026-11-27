@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import ErrorGroupState, Import, LogEntry
+from app.timebuckets import as_utc, step_back, trunc_expr, truncate, zero_filled
 from app.schemas import DashboardSummary, SeverityBucket, SourceBucket, TimelinePoint, TopError
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -54,35 +53,39 @@ def timeline(
     limit: int = Query(default=60, ge=1, le=365),
     db: Session = Depends(get_db),
 ) -> list[TimelinePoint]:
+    """The last ``limit`` calendar buckets ending at the newest entry.
+
+    Empty buckets are zero-filled so the chart's x axis is linear in time
+    (previously only non-empty buckets were returned, so bursts months apart
+    were drawn as neighbours). The window never starts before the oldest
+    entry, so short histories are not padded with leading zeros.
+    """
     if bucket not in ("hour", "day"):
         bucket = "day"
-    # Portable bucketing: date_trunc on PostgreSQL, strftime on SQLite (tests).
-    if db.get_bind().dialect.name == "sqlite":
-        pattern = "%Y-%m-%d %H:00" if bucket == "hour" else "%Y-%m-%d"
-        trunc = func.strftime(pattern, LogEntry.timestamp)
-    else:
-        trunc = func.date_trunc(bucket, LogEntry.timestamp)
+    first, last = db.query(func.min(LogEntry.timestamp), func.max(LogEntry.timestamp)).one()
+    first, last = as_utc(first), as_utc(last)
+    if first is None or last is None:
+        return []
+    end = truncate(last, bucket)
+    start = max(truncate(first, bucket), step_back(end, bucket, limit - 1))
+    trunc = trunc_expr(db.get_bind().dialect.name, bucket)
     rows = (
         db.query(
             trunc.label("bucket"),
             func.count(LogEntry.id).label("total"),
-            func.count().filter(LogEntry.severity.in_(_ERROR_SEVERITIES)).label("errors"),
+            func.count(LogEntry.id).filter(LogEntry.severity.in_(_ERROR_SEVERITIES)).label("errors"),
         )
-        .filter(LogEntry.timestamp.isnot(None))
+        .filter(LogEntry.timestamp >= start)
         .group_by(trunc)
-        .order_by(trunc.desc())
-        .limit(limit)
         .all()
     )
-    points = [
-        TimelinePoint(
-            bucket=r.bucket.isoformat() if isinstance(r.bucket, datetime) else str(r.bucket),
-            total=r.total,
-            errors=r.errors,
-        )
-        for r in rows
+    counts = {key: (r.total, r.errors) for r in rows if (key := as_utc(r.bucket)) is not None}
+    counts.setdefault(start, (0, 0))
+    counts.setdefault(end, (0, 0))
+    return [
+        TimelinePoint(bucket=key.isoformat(), total=total, errors=errors)
+        for key, total, errors in zero_filled(counts, bucket, limit)
     ]
-    return list(reversed(points))
 
 
 @router.get("/severity-distribution", response_model=list[SeverityBucket])

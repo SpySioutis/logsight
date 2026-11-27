@@ -43,6 +43,7 @@ class LogEntryOut(BaseModel):
     fingerprint: str | None
     trace_id: str | None = None
     request_id: str | None = None
+    seq: int | None = None
     snippet: str | None = None
 
     model_config = {"from_attributes": True}
@@ -76,6 +77,17 @@ class TimelinePoint(BaseModel):
     bucket: str
     total: int
     errors: int
+
+
+class LogHistogram(BaseModel):
+    bucket: Literal["minute", "hour", "day", "month"]
+    points: list[TimelinePoint]
+
+
+class LogContext(BaseModel):
+    entry: LogEntryOut
+    before: list[LogEntryOut]
+    after: list[LogEntryOut]
 
 
 class SeverityBucket(BaseModel):

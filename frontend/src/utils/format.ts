@@ -30,6 +30,18 @@ export function formatShortDate(iso: string): string {
   return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })
 }
 
+export function formatShortDateTime(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  return d.toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
+}
+
+export function formatMonth(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  return d.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })
+}
+
 export function truncate(text: string, max = 160): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text
 }

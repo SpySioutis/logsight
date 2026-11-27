@@ -378,3 +378,129 @@ def test_error_group_status_filter_applies_before_limit(client):
     # Sources are aggregated per group.
     conn = next(g for g in groups if "connection refused" in g["sample"])
     assert conn["sources"] == ["web-1", "web-2"]
+
+
+def test_export_csv_and_jsonl(client):
+    import csv as csv_mod
+    import json as json_mod
+
+    upload(client, "app.log", PLAIN_LOG)
+    resp = client.get("/api/logs/export", params={"severity": "ERROR", "sort": "timestamp", "direction": "asc"})
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("text/csv")
+    assert "attachment" in resp.headers["content-disposition"]
+    rows = list(csv_mod.reader(io.StringIO(resp.text)))
+    assert rows[0][:2] == ["timestamp", "severity"]
+    assert len(rows) == 3  # header + 2 errors
+    assert "10.0.0.5" in rows[1][4]
+
+    resp = client.get("/api/logs/export", params={"format": "jsonl", "q": "memory"})
+    lines = [json_mod.loads(line) for line in resp.text.splitlines()]
+    assert len(lines) == 1 and lines[0]["severity"] == "CRITICAL"
+    assert "attributes" in lines[0]
+
+    assert len(client.get("/api/logs/export", params={"limit": 2}).text.splitlines()) == 3
+    assert client.get("/api/logs/export", params={"format": "xml"}).status_code == 400
+    assert client.get("/api/logs/export", params={"severity": "nope"}).status_code == 400
+
+
+def test_export_neutralises_formula_cells(client):
+    upload(client, "evil.jsonl", b'{"level": "info", "msg": "=HYPERLINK(\\"http://x\\")"}\n')
+    text = client.get("/api/logs/export").text
+    assert "'=HYPERLINK" in text
+
+
+def test_histogram_follows_filters(client):
+    upload(client, "app.log", PLAIN_LOG)
+    hist = client.get("/api/logs/histogram").json()
+    assert hist["bucket"] == "minute"  # 4-minute span
+    assert sum(p["total"] for p in hist["points"]) == 5
+    assert sum(p["errors"] for p in hist["points"]) == 3
+    only_web2 = client.get("/api/logs/histogram", params={"source": "web-2"}).json()
+    assert sum(p["total"] for p in only_web2["points"]) == 1
+    assert client.get("/api/logs/histogram", params={"q": "zzz-no-match"}).json()["points"] == []
+
+
+def test_entry_context_uses_file_order(client):
+    # Identical timestamps: only the stored file order can recover sequence.
+    lines = b"".join(b"2024-05-01T10:00:00Z INFO line %d\n" % i for i in range(1, 8))
+    upload(client, "same-second.log", lines)
+    items = client.get("/api/logs", params={"page_size": 50}).json()["items"]
+    middle = next(i for i in items if i["message"].endswith("line 4"))
+    assert middle["seq"] == 4
+    ctx = client.get(f"/api/logs/{middle['id']}/context", params={"before": 2, "after": 10}).json()
+    assert [e["message"][-6:] for e in ctx["before"]] == ["line 2", "line 3"]
+    assert [e["message"][-6:] for e in ctx["after"]] == ["line 5", "line 6", "line 7"]
+    assert ctx["entry"]["id"] == middle["id"]
+    assert client.get("/api/logs/nope/context").status_code == 404
+
+
+def test_entry_context_fallback_without_seq(client, db_session):
+    from datetime import datetime, timedelta, timezone
+
+    from app.models import Import, LogEntry
+
+    rec = Import(filename="old.log", file_size=1, file_hash="o" * 64, format="plaintext", status="completed")
+    db_session.add(rec)
+    db_session.commit()
+    base = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    entries = [
+        LogEntry(import_id=rec.id, severity="INFO", message=f"m{i}", timestamp=base + timedelta(seconds=i))
+        for i in range(5)
+    ]
+    db_session.add_all(entries)
+    db_session.commit()
+    ctx = client.get(f"/api/logs/{entries[2].id}/context", params={"before": 1, "after": 1}).json()
+    assert [e["message"] for e in ctx["before"]] == ["m1"]
+    assert [e["message"] for e in ctx["after"]] == ["m3"]
+
+
+def test_histogram_fills_empty_buckets(client):
+    sparse = b"2024-05-01T10:00:00Z ERROR a\n2024-05-01T10:00:30Z INFO b\n2024-05-01T10:05:00Z INFO c\n"
+    upload(client, "sparse.log", sparse)
+    hist = client.get("/api/logs/histogram").json()
+    assert hist["bucket"] == "minute"
+    assert [p["total"] for p in hist["points"]] == [2, 0, 0, 0, 0, 1]
+    assert hist["points"][0]["errors"] == 1
+    assert hist["points"][0]["bucket"].startswith("2024-05-01T10:00:00")
+
+
+def test_dashboard_timeline_and_trend_are_zero_filled(client):
+    log = (
+        b"2024-05-01T10:00:00Z ERROR boom\n"
+        b"2024-05-04T10:00:00Z INFO ok\n"
+        b"2024-05-05T09:00:00Z ERROR boom\n"
+    )
+    upload(client, "gaps.log", log)
+    days = client.get("/api/dashboard/timeline", params={"bucket": "day"}).json()
+    assert [p["total"] for p in days] == [1, 0, 0, 1, 1]
+    assert days[0]["bucket"].startswith("2024-05-01")
+    assert [p["errors"] for p in days] == [1, 0, 0, 0, 1]
+    # Window of the last 3 buckets ending at the newest entry.
+    last3 = client.get("/api/dashboard/timeline", params={"bucket": "day", "limit": 3}).json()
+    assert [p["bucket"][:10] for p in last3] == ["2024-05-03", "2024-05-04", "2024-05-05"]
+    assert [p["total"] for p in last3] == [0, 1, 1]
+
+    fp = client.get("/api/errors/groups").json()[0]["fingerprint"]
+    trend = client.get(f"/api/errors/groups/{fp}/trend").json()
+    assert [p["count"] for p in trend] == [1, 0, 0, 0, 1]
+
+
+def test_refingerprint_merges_groups_and_keeps_state(client, db_session):
+    from app.models import ErrorGroupState, LogEntry
+    from app.refingerprint import refingerprint
+
+    upload(client, "a.log", b"2024-05-01T10:00:00Z ERROR boom\n2024-05-01T11:00:00Z ERROR boom\n")
+    # Simulate rows fingerprinted by the old rules: one group per hour.
+    rows = db_session.query(LogEntry).order_by(LogEntry.timestamp).all()
+    rows[0].fingerprint, rows[1].fingerprint = "old-10", "old-11"
+    db_session.add(ErrorGroupState(fingerprint="old-11", status="acknowledged", assignee="ops"))
+    db_session.commit()
+    assert len(client.get("/api/errors/groups").json()) == 2
+
+    scanned, changed = refingerprint(db_session, batch_size=1)
+    assert (scanned, changed) == (2, 2)
+    groups = client.get("/api/errors/groups").json()
+    assert len(groups) == 1 and groups[0]["count"] == 2
+    assert groups[0]["status"] == "acknowledged" and groups[0]["assignee"] == "ops"
+    assert refingerprint(db_session) == (2, 0)  # idempotent

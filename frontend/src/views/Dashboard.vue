@@ -9,8 +9,9 @@
     </template>
     <template #actions>
       <div class="segmented" role="tablist" aria-label="Timeline bucket">
-        <button :class="{ active: bucket === 'day' }" @click="setBucket('day')">Day</button>
-        <button :class="{ active: bucket === 'hour' }" @click="setBucket('hour')">Hour</button>
+        <button :class="{ active: bucket === 'all' }" title="All stored data, adaptive buckets" @click="setBucket('all')">All</button>
+        <button :class="{ active: bucket === 'day' }" title="Last 60 days of data" @click="setBucket('day')">Day</button>
+        <button :class="{ active: bucket === 'hour' }" title="Last 60 hours of data" @click="setBucket('hour')">Hour</button>
       </div>
       <button class="ghost sm icon-only" title="Refresh dashboard" @click="refresh">
         <AppIcon name="refresh" :size="15" />
@@ -49,7 +50,7 @@
       <div class="chart-card-head">
         <h2 style="margin: 0"><span class="h2-icon"><AppIcon name="activity" :size="15" /></span> Log volume over time</h2>
         <span class="spacer"></span>
-        <span class="chip chip-mono">{{ bucket === 'day' ? 'daily buckets' : 'hourly buckets' }}</span>
+        <span class="chip chip-mono">{{ timelineLabel }}</span>
       </div>
       <div v-if="loadingTimeline"><div class="skeleton" style="height: 190px; border-radius: var(--radius)"></div></div>
       <TimeChart v-else-if="timeline.length" :points="chartPoints" label="Log volume over time" show-errors />
@@ -122,8 +123,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
-import { api, type DashboardSummary, type TimelinePoint } from '../api/client'
-import { formatNumber, formatShortDate, truncate } from '../utils/format'
+import { api, type DashboardSummary, type LogHistogram, type TimelinePoint } from '../api/client'
+import { formatMonth, formatNumber, formatShortDate, formatShortDateTime, truncate } from '../utils/format'
 import AppIcon from '../components/AppIcon.vue'
 import EmptyState from '../components/EmptyState.vue'
 import PageHeader from '../components/PageHeader.vue'
@@ -140,14 +141,27 @@ const timeline = ref<TimelinePoint[]>([])
 const severityDist = ref<{ severity: string; count: number }[]>([])
 const topSources = ref<{ source: string; count: number }[]>([])
 const topErrors = ref<{ fingerprint: string; sample: string; count: number; status?: string }[]>([])
-const bucket = ref<'day' | 'hour'>('day')
+type TimelineMode = 'all' | 'day' | 'hour'
+const bucket = ref<TimelineMode>('all')
+/** Bucket width actually used (the adaptive "all" view picks its own). */
+const pointBucket = ref<string>('day')
+const timelineLabel = computed(() => {
+  if (bucket.value === 'day') return 'last 60 days of data'
+  if (bucket.value === 'hour') return 'last 60 hours of data'
+  return `all data · per ${pointBucket.value}`
+})
 
 const chartPoints = computed(() =>
   timeline.value.map((p) => ({
     key: p.bucket,
     total: p.total,
     errors: p.errors,
-    xLabel: formatShortDate(p.bucket),
+    xLabel:
+      pointBucket.value === 'hour' || pointBucket.value === 'minute'
+        ? formatShortDateTime(p.bucket)
+        : pointBucket.value === 'month'
+          ? formatMonth(p.bucket)
+          : formatShortDate(p.bucket),
   })),
 )
 
@@ -226,13 +240,20 @@ function goErrors() {
 async function loadTimeline() {
   loadingTimeline.value = true
   try {
-    timeline.value = (await api.get('/dashboard/timeline', { params: { bucket: bucket.value } })).data
+    if (bucket.value === 'all') {
+      const hist: LogHistogram = (await api.get('/logs/histogram')).data
+      timeline.value = hist.points
+      pointBucket.value = hist.bucket
+    } else {
+      timeline.value = (await api.get('/dashboard/timeline', { params: { bucket: bucket.value } })).data
+      pointBucket.value = bucket.value
+    }
   } finally {
     loadingTimeline.value = false
   }
 }
 
-async function setBucket(b: 'day' | 'hour') {
+async function setBucket(b: TimelineMode) {
   if (bucket.value === b) return
   bucket.value = b
   await loadTimeline()

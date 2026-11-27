@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import ErrorGroupState, LogEntry
+from app.timebuckets import as_utc, step_back, trunc_expr, truncate, zero_filled
 from app.schemas import ErrorGroup, ErrorGroupStateIn, ErrorGroupStateOut, ErrorTrendPoint, LogEntryOut, LogPage
 
 router = APIRouter(prefix="/errors", tags=["errors"])
@@ -168,27 +167,33 @@ def group_trend(
     limit: int = Query(default=30, ge=1, le=365),
     db: Session = Depends(get_db),
 ) -> list[ErrorTrendPoint]:
+    """Zero-filled occurrence counts for one group.
+
+    The window ends at the newest stored entry overall (not the group's
+    last occurrence), so trailing zeros show that an error stopped.
+    """
     if bucket not in ("hour", "day"):
         bucket = "day"
-    if db.get_bind().dialect.name == "sqlite":
-        pattern = "%Y-%m-%d %H:00" if bucket == "hour" else "%Y-%m-%d"
-        trunc = func.strftime(pattern, LogEntry.timestamp)
-    else:
-        trunc = func.date_trunc(bucket, LogEntry.timestamp)
+    latest = as_utc(db.query(func.max(LogEntry.timestamp)).scalar())
+    first = as_utc(
+        db.query(func.min(LogEntry.timestamp)).filter(LogEntry.fingerprint == fingerprint).scalar()
+    )
+    if latest is None or first is None:
+        return []
+    end = truncate(latest, bucket)
+    start = max(truncate(first, bucket), step_back(end, bucket, limit - 1))
+    trunc = trunc_expr(db.get_bind().dialect.name, bucket)
     rows = (
         db.query(trunc.label("bucket"), func.count(LogEntry.id).label("count"))
         .filter(LogEntry.fingerprint == fingerprint)
-        .filter(LogEntry.timestamp.isnot(None))
+        .filter(LogEntry.timestamp >= start)
         .group_by(trunc)
-        .order_by(trunc.desc())
-        .limit(limit)
         .all()
     )
-    points = [
-        ErrorTrendPoint(
-            bucket=r.bucket.isoformat() if isinstance(r.bucket, datetime) else str(r.bucket),
-            count=r.count,
-        )
-        for r in rows
+    counts = {key: (r.count, 0) for r in rows if (key := as_utc(r.bucket)) is not None}
+    counts.setdefault(start, (0, 0))
+    counts.setdefault(end, (0, 0))
+    return [
+        ErrorTrendPoint(bucket=key.isoformat(), count=count)
+        for key, count, _ in zero_filled(counts, bucket, limit)
     ]
-    return list(reversed(points))

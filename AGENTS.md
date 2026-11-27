@@ -27,21 +27,23 @@ backend/
     schemas.py         # Pydantic request/response models
     severity.py        # canonical levels + normalize_severity (never discards)
     parsers.py         # streaming plaintext (+syslog/multiline) / JSONL / JSON / CSV parsers
-    grouping.py        # deterministic error fingerprinting
+    grouping.py        # deterministic error fingerprinting (timestamps/IPs/ids masked)
+    refingerprint.py   # `python -m app.refingerprint`: recompute stored fingerprints after rule changes
+    timebuckets.py     # portable date_trunc/strftime bucketing + zero-filling for charts
     search.py          # q-language parser, ILIKE fallback, snippet highlighting
     import_service.py  # upload → temp file + hash → parse (+gzip/zip) → COPY bulk load + progress heartbeats
-    migrate.py         # applies backend/migrations/*.sql once each
+    migrate.py         # applies backend/migrations/*.sql once each, then fails interrupted imports
     routers/           # health, imports, logs, dashboard, errors, filters, traces
-  migrations/0001_initial.sql … 0005_error_states.sql
+  migrations/0001_initial.sql … 0007_entry_seq.sql
   tests/               # pytest (SQLite override in conftest.py)
 frontend/
   src/
-    api/client.ts      # axios instance + types + toParams()
+    api/client.ts      # axios instance + types + toParams() / apiParams() / exportUrl()
     utils/             # severity.ts, format.ts, highlight.ts (+ vitest files)
     stores/settings.ts # Pinia: theme + page size (localStorage)
     components/        # AppIcon, SeverityBadge, StatusBadge, FilterBar, LogTable,
                        # LogDetails, Pagination, StatCard, TimeChart, TrendSpark,
-                       # EmptyState, PageHeader, TableSkeleton
+                       # HistogramBars, EmptyState, PageHeader, TableSkeleton
     views/             # Dashboard, Explorer, Errors, Traces, Imports, SavedFilters, Settings, TraceView
     router/index.ts
 samples/               # app.log, app.jsonl, structured.json, events.csv,
@@ -76,7 +78,15 @@ framework, database or AI service may be introduced silently.
 - Severity handling: always go through `normalize_severity`; store canonical
   values; `UNKNOWN` is a valid stored value, never an error.
 - Error grouping: deterministic `fingerprint()` in `grouping.py` only. No
-  external AI/clustering APIs.
+  external AI/clustering APIs. Changing normalisation rules changes stored
+  fingerprints: mention `python -m app.refingerprint` in the release notes.
+- Time charts: bucket via `app/timebuckets.py` and zero-fill empty buckets so
+  x axes stay linear in time (never return only non-empty buckets).
+- Dates from the UI: `datetime-local` values are the user's local time.
+  UI state and URLs keep that form; API calls go through `apiParams()`, which
+  converts them to UTC ISO instants. Never send raw `datetime-local` values.
+- CSS variables: never alias a custom property to itself
+  (`--x: var(--x)` is a cycle and invalidates it app-wide).
 
 ## Dependency management
 
@@ -100,11 +110,11 @@ cd frontend && npm test && npm run build
 
 ## Testing commands
 
-- `cd backend && uv run pytest -q` — 54 tests. API tests use an isolated
+- `cd backend && uv run pytest -q` — 68 tests. API tests use an isolated
   in-memory SQLite DB (`tests/conftest.py`); SQLite-only branches (e.g.
   `strftime` timeline bucketing, `ILIKE` search) exist solely to keep these
   tests portable.
-- `cd frontend && npm test` — 12 vitest tests.
+- `cd frontend && npm test` — 17 vitest tests.
 
 Never claim tests pass without running them in-session.
 
@@ -132,7 +142,13 @@ Never claim tests pass without running them in-session.
 - Explorer filtering/sorting/pagination is server-side; validate `sort`
   (incl. `relevance`), `direction`, `severity` and error `status` with 400s,
   never 500s. Page cap: 500 rows. `sort=relevance` falls back to newest-first
-  when there is no `q` or no tsvector (SQLite).
+  when there is no `q` or no tsvector (SQLite). `/logs`, `/logs/export` and
+  `/logs/histogram` share the `log_filters` dependency — add new filters
+  there so all three stay consistent. Export streams one query via
+  `yield_per` (no OFFSET re-querying), capped at 100,000 rows, with CSV cells
+  starting with `= + - @` prefixed by `'` (formula injection).
+- Failed imports never keep partial rows (`_mark_failed()` deletes them);
+  imports left `processing` by a crash are failed at boot.
 - Upload: extension allowlist (`.log .txt .jsonl .ndjson .json .csv`, plus
   `.gz` / `.zip`) + `MAX_UPLOAD_MB` cap (413) applied to raw and decompressed
   bytes, content-hash duplicate detection (`status: "duplicate"`, no
