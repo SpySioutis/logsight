@@ -32,7 +32,7 @@ backend/
     timebuckets.py     # portable date_trunc/strftime bucketing + zero-filling for charts
     search.py          # q-language parser, ILIKE fallback, snippet highlighting
     import_service.py  # upload → temp file + hash → parse (+gzip/zip) → COPY bulk load + progress heartbeats
-    migrate.py         # applies backend/migrations/*.sql once each, then fails interrupted imports
+    migrate.py         # applies backend/migrations/*.sql once each; `--recover` (container boot only) fails interrupted imports
     routers/           # health, imports, logs, dashboard, errors, filters, traces
   migrations/0001_initial.sql … 0008_search_split_tokens.sql
   tests/               # pytest (SQLite override in conftest.py)
@@ -85,7 +85,10 @@ framework, database or AI service may be introduced silently.
   external AI/clustering APIs. Changing normalisation rules changes stored
   fingerprints: mention `python -m app.refingerprint` in the release notes.
 - Time charts: bucket via `app/timebuckets.py` and zero-fill empty buckets so
-  x axes stay linear in time (never return only non-empty buckets).
+  x axes stay linear in time (never return only non-empty buckets). Keep the
+  newest buckets when capping, and ignore far-future timestamps (beyond
+  now + 1 day) for chart ranges/windows (`latest_plausible()`): one
+  mis-parsed date must not hide real data.
 - Dates from the UI: `datetime-local` values are the user's local time.
   UI state and URLs keep that form; API calls go through `apiParams()`, which
   converts them to UTC ISO instants. Never send raw `datetime-local` values.

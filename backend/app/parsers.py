@@ -153,10 +153,13 @@ def parse_plain_line(line: str) -> ParsedEntry:
         return syslog_entry
     raw = line if len(line) <= MAX_LINE_LENGTH else line[:MAX_LINE_LENGTH] + "…"
     text = line.strip()
-    level_match = _LEVEL_RE.search(text)
+    access = _ACCESS_RE.search(text)
+    # In access logs, only look for a level *before* the quoted request:
+    # words in the path, referrer or user agent ("/api/error/report",
+    # "/debug") are not severities.
+    level_match = _LEVEL_RE.search(text, 0, access.start() if access else len(text))
     severity = normalize_severity(level_match.group("level")) if level_match else "UNKNOWN"
     attributes: dict[str, Any] = {}
-    access = _ACCESS_RE.search(text)
     if access is not None:
         status = int(access.group("status"))
         attributes = {
@@ -346,7 +349,15 @@ def _coerce_timestamp(value: Any) -> datetime | None:
     if isinstance(value, str):
         stripped = value.strip()
         if _NUMERIC.fullmatch(stripped):
-            # CSV delivers every value as text: "1714557600" is an epoch.
+            # Compact dates first ("20240501123456"), then epochs: CSV
+            # delivers every value as text, so "1714557600" is an epoch.
+            for fmt in _COMPACT_FORMATS.get(len(stripped), ()):
+                try:
+                    return datetime.strptime(stripped, fmt).replace(tzinfo=timezone.utc)
+                except ValueError:
+                    pass
+            if len(stripped.split(".")[0]) not in (10, 13, 16):
+                return None  # not seconds / ms / µs since the epoch
             return _coerce_timestamp(float(stripped))
         parsed = _parse_iso(stripped)
         if parsed is not None:
@@ -363,6 +374,7 @@ def _coerce_timestamp(value: Any) -> datetime | None:
 
 
 _NUMERIC = re.compile(r"\d{9,16}(?:\.\d+)?")
+_COMPACT_FORMATS = {14: ("%Y%m%d%H%M%S",), 12: ("%Y%m%d%H%M",)}
 
 
 def parse_json_object(obj: dict[str, Any], raw: str) -> ParsedEntry:

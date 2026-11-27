@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import ErrorGroupState, Import, LogEntry
-from app.timebuckets import as_utc, step_back, trunc_expr, truncate, zero_filled
+from app.timebuckets import latest_plausible, as_utc, step_back, trunc_expr, truncate, zero_filled
 from app.schemas import DashboardSummary, SeverityBucket, SourceBucket, TimelinePoint, TopError
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -67,8 +67,8 @@ def timeline(
     """
     if bucket not in ("hour", "day"):
         bucket = "day"
-    first, last = db.query(func.min(LogEntry.timestamp), func.max(LogEntry.timestamp)).one()
-    first, last = as_utc(first), as_utc(last)
+    first = as_utc(db.query(func.min(LogEntry.timestamp)).scalar())
+    last = latest_plausible(db)
     if first is None or last is None:
         return []
     end = truncate(last, bucket)
@@ -84,7 +84,7 @@ def timeline(
         .group_by(trunc)
         .all()
     )
-    counts = {key: (r.total, r.errors) for r in rows if (key := as_utc(r.bucket)) is not None}
+    counts = {key: (r.total, r.errors) for r in rows if (key := as_utc(r.bucket)) is not None and key <= end}
     counts.setdefault(start, (0, 0))
     counts.setdefault(end, (0, 0))
     return [

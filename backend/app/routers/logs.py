@@ -347,10 +347,20 @@ def histogram(
     Empty buckets are zero-filled so the x axis is linear in time.
     """
     query, _parsed, dialect = _filtered(db, filters)
-    first, last = query.with_entities(func.min(LogEntry.timestamp), func.max(LogEntry.timestamp)).one()
+    # Plot only up to "now" (+1 day of clock skew) when there is such data:
+    # one mis-parsed far-future date (e.g. "valid until 9999-12-31") would
+    # otherwise stretch the axis to that year and hide every real entry.
+    # Those entries stay listed and exported; they are just not plotted.
+    horizon = datetime.now(timezone.utc) + timedelta(days=1)
+    plotted = query.filter(LogEntry.timestamp <= horizon)
+    first, last = plotted.with_entities(func.min(LogEntry.timestamp), func.max(LogEntry.timestamp)).one()
+    if first is None:
+        plotted = query
+        first, last = query.with_entities(func.min(LogEntry.timestamp), func.max(LogEntry.timestamp)).one()
     first, last = as_utc(first), as_utc(last)
     if first is None or last is None:
         return LogHistogram(bucket="hour", points=[])
+    query = plotted
     label = next(name for name, widest in _HISTOGRAM_BUCKETS if widest is None or last - first <= widest)
     trunc = trunc_expr(dialect, label)
     rows = (

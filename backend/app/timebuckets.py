@@ -57,6 +57,9 @@ def truncate(value: datetime, label: str) -> datetime:
 
 
 def next_bucket(value: datetime, label: str) -> datetime:
+    """Next bucket start. Raises OverflowError past year 9999."""
+    if label == "month" and value.year == 9999 and value.month == 12:
+        raise OverflowError("date value out of range")
     if label == "minute":
         return value + timedelta(minutes=1)
     if label == "hour":
@@ -67,21 +70,49 @@ def next_bucket(value: datetime, label: str) -> datetime:
 
 
 def step_back(value: datetime, label: str, steps: int) -> datetime:
-    """``value`` moved ``steps`` whole buckets into the past (not months)."""
-    unit = {"minute": timedelta(minutes=1), "hour": timedelta(hours=1), "day": timedelta(days=1)}[label]
-    return value - unit * steps
+    """``value`` moved ``steps`` whole buckets into the past (clamped at year 1)."""
+    try:
+        if label == "month":
+            index = value.year * 12 + value.month - 1 - steps
+            return value.replace(year=max(1, index // 12), month=index % 12 + 1)
+        unit = {"minute": timedelta(minutes=1), "hour": timedelta(hours=1), "day": timedelta(days=1)}[label]
+        return value - unit * steps
+    except (OverflowError, ValueError):
+        return datetime.min.replace(tzinfo=timezone.utc)
 
 
 def zero_filled(
     counts: dict[datetime, tuple[int, int]], label: str, max_points: int
 ) -> list[tuple[datetime, int, int]]:
-    """Every bucket from the first to the last key, missing ones as zeros."""
+    """Every bucket from the first to the last key, missing ones as zeros.
+
+    When the range exceeds ``max_points`` the *newest* buckets are kept
+    (an old outlier must not push the real, recent data out of the chart).
+    """
     if not counts:
         return []
+    end = max(counts)
+    cursor = max(min(counts), step_back(end, label, max_points - 1))
     out: list[tuple[datetime, int, int]] = []
-    cursor, end = min(counts), max(counts)
     while cursor <= end and len(out) < max_points:
         total, errors = counts.get(cursor, (0, 0))
         out.append((cursor, total, errors))
-        cursor = next_bucket(cursor, label)
+        try:
+            cursor = next_bucket(cursor, label)
+        except OverflowError:  # bucket at 9999-12-31: nothing after it
+            break
     return out
+
+
+def latest_plausible(db) -> datetime | None:
+    """Newest entry timestamp that is not in the future (+1 day of skew).
+
+    Windowed charts end here: a single mis-parsed far-future line (e.g. a
+    "valid until 2099-01-01" date) must not move the window away from data.
+    Falls back to the absolute newest when every entry is in the future.
+    """
+    horizon = datetime.now(timezone.utc) + timedelta(days=1)
+    value = db.query(func.max(LogEntry.timestamp)).filter(LogEntry.timestamp <= horizon).scalar()
+    if value is None:
+        value = db.query(func.max(LogEntry.timestamp)).scalar()
+    return as_utc(value)

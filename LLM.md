@@ -154,7 +154,11 @@ logsight/
   timezone('UTC', ts))` — explicit UTC, independent of the PG session
   TimeZone — / `strftime`), `as_utc()` key normalisation, `zero_filled()`. Every time
   chart (dashboard timeline, error trend, explorer histogram) returns
-  zero-filled buckets so x axes are linear in time.
+  zero-filled buckets so x axes are linear in time; capped ranges keep the
+  newest buckets; `latest_plausible()` (newest timestamp ≤ now + 1 day)
+  anchors Day/Hour windows and trends, and the histogram plots only up to
+  that horizon when such data exists (far-future mis-parses stay listed,
+  just not plotted). Bucket stepping is overflow-safe at year 9999.
 - **`parsers.py`**: yields `ParsedEntry(timestamp, severity, service,
   source, message, raw, attributes, fingerprint, trace_id, request_id)`.
   - `parse_plain_line()`: never raises; tries RFC 5424 syslog first, then
@@ -212,7 +216,8 @@ logsight/
   import therefore never leaves partial data behind.
 - **`migrate.py`**: applies `migrations/*.sql` in filename order inside
   one transaction per file, records versions in `schema_migrations`.
-  Idempotent; safe to run every boot. After migrating, `recover()` calls
+  Idempotent; safe to run every boot. With `--recover` (only passed by the
+  Dockerfile CMD, never when run by hand against a live server), `recover()` calls
   `recover_interrupted_imports()`: any import still `processing` at boot
   (server crashed/restarted mid-upload) is marked `failed` and its partial
   rows removed. Safe because imports only run inside the single API

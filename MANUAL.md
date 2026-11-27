@@ -78,7 +78,9 @@ Migrations run automatically every time the backend container starts
 in `schema_migrations` and skipped. To apply them manually against a running
 stack, see §11.
 
-The same boot step also cleans up imports interrupted by a crash or restart:
+The container's boot step (`python -m app.migrate --recover`) also cleans up
+imports interrupted by a crash or restart (running `python -m app.migrate`
+by hand never does this, so it is safe against a live server):
 anything still in `processing` is marked `failed` (with an explanatory
 message) and its partially loaded rows are removed. A failed import never
 leaves partial data behind — simply upload the file again.

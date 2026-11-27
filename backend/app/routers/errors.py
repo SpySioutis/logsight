@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import ErrorGroupState, LogEntry
-from app.timebuckets import as_utc, step_back, trunc_expr, truncate, zero_filled
+from app.timebuckets import latest_plausible, as_utc, step_back, trunc_expr, truncate, zero_filled
 from app.schemas import ErrorGroup, ErrorGroupStateIn, ErrorGroupStateOut, ErrorTrendPoint, LogEntryOut, LogPage
 
 router = APIRouter(prefix="/errors", tags=["errors"])
@@ -174,7 +174,7 @@ def group_trend(
     """
     if bucket not in ("hour", "day"):
         bucket = "day"
-    latest = as_utc(db.query(func.max(LogEntry.timestamp)).scalar())
+    latest = latest_plausible(db)
     first = as_utc(
         db.query(func.min(LogEntry.timestamp)).filter(LogEntry.fingerprint == fingerprint).scalar()
     )
@@ -190,7 +190,7 @@ def group_trend(
         .group_by(trunc)
         .all()
     )
-    counts = {key: (r.count, 0) for r in rows if (key := as_utc(r.bucket)) is not None}
+    counts = {key: (r.count, 0) for r in rows if (key := as_utc(r.bucket)) is not None and key <= end}
     counts.setdefault(start, (0, 0))
     counts.setdefault(end, (0, 0))
     return [

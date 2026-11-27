@@ -32,7 +32,7 @@
     </svg>
     <div class="histo-foot">
       <span class="mono">{{ points.length ? formatBucket(points[0].bucket) : '' }}</span>
-      <span v-if="hovered !== null" class="histo-tip">
+      <span v-if="hovered !== null && points[hovered]" class="histo-tip">
         <span class="mono">{{ formatBucket(points[hovered].bucket) }}</span>
         · {{ formatNumber(points[hovered].total) }} entries
         <template v-if="points[hovered].errors">· <span class="err-text">{{ formatNumber(points[hovered].errors) }} errors</span></template>
@@ -45,7 +45,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import type { TimelinePoint } from '../api/client'
 import { formatNumber } from '../utils/format'
 
@@ -55,6 +55,12 @@ defineEmits<{ (e: 'zoom', bucket: string): void }>()
 const width = 1000
 const height = 64
 const hovered = ref<number | null>(null)
+// After a zoom the pointer is still over the chart but the bars changed:
+// a stale index could point past the end (render crash) or at the wrong bar.
+watch(
+  () => props.points,
+  () => (hovered.value = null),
+)
 
 const slot = computed(() => width / Math.max(1, props.points.length))
 const gap = computed(() => (slot.value > 6 ? Math.min(4, slot.value * 0.2) : 0))

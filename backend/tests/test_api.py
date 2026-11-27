@@ -530,3 +530,51 @@ def test_fingerprint_filter_lists_whole_group(client):
     assert page["total"] == group["count"] == 2
     exported = client.get("/api/logs/export", params={"fingerprint": group["fingerprint"]}).text
     assert len(exported.splitlines()) == 3
+
+
+def test_charts_survive_timestamp_outliers(client):
+    # Year-9999 line: bucket stepping used to overflow -> 500.
+    upload(client, "far.log", b"ERROR token valid until 9999-12-31 23:59:59 expired\n")
+    for bucket in ("day", "hour"):
+        assert client.get("/api/dashboard/timeline", params={"bucket": bucket}).status_code == 200
+    assert client.get("/api/logs/histogram").status_code == 200
+    fp = client.get("/api/errors/groups").json()[0]["fingerprint"]
+    assert client.get(f"/api/errors/groups/{fp}/trend").status_code == 200
+
+    # Real recent data + the future outlier + a 1970 outlier.
+    recent = b"".join(b"2026-11-%02dT10:00:00Z INFO real %d\n" % (d, d) for d in range(1, 11))
+    upload(client, "recent.log", recent)
+    upload(client, "old.jsonl", b'{"timestamp": 0, "msg": "epoch zero"}\n')
+    # Histogram ignores the far-future outlier and keeps the newest buckets,
+    # so the real data stays visible despite the 1970 outlier too.
+    hist = client.get("/api/logs/histogram").json()
+    assert hist["points"][-1]["bucket"].startswith("2026-11")
+    assert sum(p["total"] for p in hist["points"]) == 10
+    # Only future data: still plotted (fallback).
+    assert client.get("/api/logs/histogram", params={"q": "token"}).json()["points"]
+    # Day window ends at the newest non-future entry, not at year 9999.
+    days = client.get("/api/dashboard/timeline", params={"bucket": "day"}).json()
+    assert sum(p["total"] for p in days) == 10
+
+
+def test_offsets_normalised_to_utc_on_store(client):
+    upload(client, "tz.jsonl", b'{"timestamp": "2024-05-01T10:00:00+05:00", "msg": "a"}\n'
+                               b'{"timestamp": "2024-05-01T06:00:00Z", "msg": "b"}\n')
+    items = client.get("/api/logs", params={"sort": "timestamp", "direction": "asc"}).json()["items"]
+    assert [i["message"] for i in items] == ["a", "b"]  # 05:00Z before 06:00Z
+    hit = client.get("/api/logs", params={"date_from": "2024-05-01T04:30:00Z", "date_to": "2024-05-01T05:30:00Z"})
+    assert [i["message"] for i in hit.json()["items"]] == ["a"]
+
+
+def test_refingerprint_state_follows_split_groups(client, db_session):
+    from app.models import ErrorGroupState, LogEntry
+    from app.refingerprint import refingerprint
+
+    upload(client, "s.log", b"ERROR job 1234567 failed\nERROR job abcdef1 failed\n")
+    for row in db_session.query(LogEntry).all():
+        row.fingerprint = "old-merged"  # both normalised to "job <hex> failed" before
+    db_session.add(ErrorGroupState(fingerprint="old-merged", status="muted"))
+    db_session.commit()
+    refingerprint(db_session)
+    groups = client.get("/api/errors/groups").json()
+    assert len(groups) == 2 and {g["status"] for g in groups} == {"muted"}

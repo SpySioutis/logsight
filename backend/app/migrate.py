@@ -66,7 +66,10 @@ if __name__ == "__main__":
     except Exception as exc:  # noqa: BLE001 - startup must show the real error
         print(f"migration failed: {exc}", file=sys.stderr)
         raise
-    try:
-        recover()
-    except Exception as exc:  # noqa: BLE001 - never block startup on cleanup
-        print(f"import recovery skipped: {exc}", file=sys.stderr)
+    # Only at container boot (Dockerfile CMD passes --recover), never when
+    # run by hand against a live server: that would fail in-flight imports.
+    if "--recover" in sys.argv[1:]:
+        try:
+            recover()
+        except Exception as exc:  # noqa: BLE001 - never block startup on cleanup
+            print(f"import recovery skipped: {exc}", file=sys.stderr)

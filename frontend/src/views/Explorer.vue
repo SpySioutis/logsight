@@ -240,10 +240,12 @@ async function loadHistogram() {
 }
 
 const BUCKET_STEP: Record<string, (d: Date) => void> = {
-  minute: (d) => d.setMinutes(d.getMinutes() + 1),
-  hour: (d) => d.setHours(d.getHours() + 1),
-  day: (d) => d.setDate(d.getDate() + 1),
-  month: (d) => d.setMonth(d.getMonth() + 1),
+  // Buckets are UTC: step with UTC setters (local ones drift across DST
+  // and month lengths in non-UTC timezones).
+  minute: (d) => d.setUTCMinutes(d.getUTCMinutes() + 1),
+  hour: (d) => d.setUTCHours(d.getUTCHours() + 1),
+  day: (d) => d.setUTCDate(d.getUTCDate() + 1),
+  month: (d) => d.setUTCMonth(d.getUTCMonth() + 1),
 }
 
 function zoomTo(bucketStart: string) {

@@ -154,7 +154,8 @@ def _row(entry: parsers.ParsedEntry, seq: int) -> dict:
     return {
         "seq": seq,
         "id": str(uuid.uuid4()),
-        "timestamp": entry.timestamp,
+        # Stored as UTC: SQLite drops offsets (PG keeps the instant anyway).
+        "timestamp": entry.timestamp.astimezone(timezone.utc) if entry.timestamp else None,
         "severity": entry.severity,
         "service": entry.service,
         "source": entry.source,

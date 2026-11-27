@@ -37,7 +37,7 @@ _EPOCH = datetime.min.replace(tzinfo=timezone.utc)
 
 def refingerprint(db: Session, batch_size: int = BATCH) -> tuple[int, int]:
     """Return ``(rows_scanned, rows_changed)``."""
-    mapping: dict[str, str] = {}
+    mapping: dict[str, set[str]] = {}
     scanned = changed = 0
     last_id = ""
     while True:
@@ -56,7 +56,7 @@ def refingerprint(db: Session, batch_size: int = BATCH) -> tuple[int, int]:
             new = fingerprint(message)
             if new != old:
                 updates.append({"row_id": row_id, "fp": new})
-                mapping.setdefault(old, new)
+                mapping.setdefault(old, set()).add(new)
         if updates:
             db.execute(_UPDATE, updates)
         db.commit()
@@ -74,16 +74,17 @@ def _stamp(state: ErrorGroupState) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
-def _carry_states(db: Session, mapping: dict[str, str]) -> None:
+def _carry_states(db: Session, mapping: dict[str, set[str]]) -> None:
     if not mapping:
         return
     old_states = db.query(ErrorGroupState).filter(ErrorGroupState.fingerprint.in_(list(mapping))).all()
     best: dict[str, ErrorGroupState] = {}
     for state in old_states:
-        new = mapping[state.fingerprint]
-        current = best.get(new)
-        if current is None or _stamp(state) > _stamp(current):
-            best[new] = state
+        # One old group can also split into several new ones: each gets it.
+        for new in mapping[state.fingerprint]:
+            current = best.get(new)
+            if current is None or _stamp(state) > _stamp(current):
+                best[new] = state
     for new, source in best.items():
         if db.get(ErrorGroupState, new) is not None:
             continue  # a state set on the new group already wins

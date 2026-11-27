@@ -224,3 +224,27 @@ def test_slash_dated_and_epoch_string_timestamps():
         entry = parse_json_line(json.dumps({"timestamp": value, "msg": "x"}), 1)
         assert entry is not None and entry.timestamp is not None
         assert entry.timestamp.isoformat() == expected, value
+
+
+def test_access_log_level_only_outside_request():
+    from app.parsers import parse_plain_line
+
+    line = '1.2.3.4 - - [01/May/2024:12:00:00 +0000] "GET {path} HTTP/1.1" {status} 1 "https://x/WARN" "ua"'
+    assert parse_plain_line(line.format(path="/api/error/report", status=200)).severity == "INFO"
+    assert parse_plain_line(line.format(path="/debug", status=503)).severity == "ERROR"
+    assert parse_plain_line(line.format(path="/?level=info", status=500)).severity == "ERROR"
+    assert parse_plain_line(line.format(path="/", status=404)).severity == "WARNING"
+
+
+def test_compact_numeric_dates_are_not_epochs():
+    import json
+
+    from app.parsers import parse_json_line
+
+    def ts(value):
+        return parse_json_line(json.dumps({"timestamp": value, "msg": "x"}), 1).timestamp
+
+    assert ts("20240501123456").isoformat() == "2024-05-01T12:34:56+00:00"
+    assert ts("202405011234").isoformat() == "2024-05-01T12:34:00+00:00"
+    assert ts("1714557600").year == 2024
+    assert ts("12345678901") is None  # 11 digits: neither a date nor an epoch unit
