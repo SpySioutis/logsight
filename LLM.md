@@ -85,7 +85,7 @@ logsight/
 │   │   ├── import_service.py  # upload -> temp+hash -> decompress -> parse -> batch insert
 │   │   ├── migrate.py         # versioned *.sql runner via schema_migrations table + interrupted-import recovery
 │   │   └── routers/           # health, imports, logs, dashboard, errors, filters, traces
-│   ├── migrations/            # 0001_initial … 0007_entry_seq (see §6)
+│   ├── migrations/            # 0001_initial … 0008_search_split_tokens (see §6)
 │   ├── tests/                 # pytest, 68 tests, isolated in-memory SQLite per test
 │   ├── pyproject.toml + uv.lock
 │   └── .venv/                 # local env (gitignored), created by `uv sync`
@@ -309,6 +309,7 @@ Migrations (never edit an applied one; new change = new numbered file):
 | `0005_error_states.sql` | `error_group_states(fingerprint PK, status CHECK, assignee, note, updated_at)` |
 | `0006_dashboard_indexes.sql` | composite covering indexes `ix_log_entries_timestamp_severity(timestamp DESC, severity)` (timeline index-only scans) + `ix_log_entries_severity_fingerprint(severity, fingerprint)` (top-errors). Index-only build, no heap rewrite |
 | `0007_entry_seq.sql` | nullable `seq BIGINT` (metadata-only ADD COLUMN) + `ix_log_entries_import_seq(import_id, seq)`; importer numbers entries 1..n per import (continuing across zip members) |
+| `0008_search_split_tokens.sql` | rebuilds `ix_log_entries_search` over `to_tsvector('english', translate(message ‖ service ‖ source ‖ trace_id ‖ request_id, '/.@:', '    '))` so path/e-mail/host/IP parts are words; ends with `ANALYZE log_entries` (expression stats). 2M rows: 48 s build |
 
 Critical database rules (several were learned the hard way on a 5.8M-row,
 7.6 GB production table — do not regress them):
@@ -316,9 +317,10 @@ Critical database rules (several were learned the hard way on a 5.8M-row,
 1. **No stored tsvector, no backfill migrations.** A `SET search_vector`
    backfill rewrites the entire heap and took >20 min before being killed.
    The expression index is one parallel bulk build with zero heap changes.
-2. **The query expression must be byte-identical** to the index expression
-   (see `_SEARCH_VECTOR_EXPR` in `routers/logs.py`) or PG silently ignores
-   the index. Verify with `EXPLAIN` (expect `Bitmap Index Scan on
+2. **The query expression must be identical** to the index expression
+   (see `_SEARCH_VECTOR_EXPR` in `routers/logs.py`, defined by migration
+   0008, incl. the `translate(…, '/.@:', '    ')` split mirrored by
+   `search.FTS_SPLIT_CHARS`) or PG silently ignores the index. Verify with `EXPLAIN` (expect `Bitmap Index Scan on
    ix_log_entries_search`).
 3. **The `OFFSET 0` in the free-text id-subquery is load-bearing.** Without
    it the planner flattens `IN (SELECT…)` into "timestamp-index scan +
@@ -409,8 +411,11 @@ docker compose down                        # keeps pgdata volume
 - Synchronous imports: very large files take as long as the HTTP request;
   no background worker (needs approval to add).
 - Single-document `.json` must fit in memory; `.jsonl` streams instead.
-- Trace detail caps at 500 entries; error `status` filter applies after
-  the top-N limit.
+- Trace detail caps at 500 entries.
+- A search term matching nearly every row (e.g. `request` on a table where
+  every line contains it) is slow on very large tables (~11 s for 2M
+  matches): the planner then evaluates `to_tsvector()` per row. Rare and
+  moderately common terms stay in the 10–250 ms range.
 - No auth/multi-user: do not expose to untrusted networks without access
   control in front. No secrets in images; `.env` stays out of Git.
 - `.env.example` documents all config (`POSTGRES_*`, `BACKEND_PORT`,

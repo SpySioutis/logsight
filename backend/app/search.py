@@ -60,12 +60,33 @@ class ParsedQuery:
 
     @property
     def websearch_text(self) -> str:
-        """Free-text part rebuilt in websearch_to_tsquery syntax."""
-        parts = list(self.must_terms)
-        parts += [f'"{p}"' for p in self.must_phrases]
-        parts += [f"-{t}" for t in self.exclude_terms]
-        parts += [f'-"{p}"' for p in self.exclude_phrases]
-        return " ".join(parts)[:500]
+        """Free-text part rebuilt in websearch_to_tsquery syntax.
+
+        Terms get the same character split as the indexed text; a term that
+        splits into several words becomes a phrase ("10.0.0.5" ->
+        "10 0 0 5") so it still matches only that exact sequence.
+        """
+        parts = [_fts_term(t) for t in self.must_terms]
+        parts += [f'"{_fts_split(p)}"' for p in self.must_phrases]
+        parts += [f"-{_fts_term(t)}" for t in self.exclude_terms]
+        parts += [f'-"{_fts_split(p)}"' for p in self.exclude_phrases]
+        return " ".join(p for p in parts if p.strip('-" '))[:500]
+
+
+# Characters the search index treats as word separators (see
+# migrations/0008_search_split_tokens.sql): PostgreSQL's parser would
+# otherwise keep paths, e-mails, hosts and IPs as single tokens.
+FTS_SPLIT_CHARS = "/.@:"
+_FTS_SPLIT = str.maketrans({c: " " for c in FTS_SPLIT_CHARS})
+
+
+def _fts_split(text: str) -> str:
+    return " ".join(text.translate(_FTS_SPLIT).split())
+
+
+def _fts_term(term: str) -> str:
+    split = _fts_split(term)
+    return f'"{split}"' if " " in split else split
 
 
 def _strip_quotes(value: str) -> tuple[str, bool]:

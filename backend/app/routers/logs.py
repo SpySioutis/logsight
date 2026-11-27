@@ -43,11 +43,13 @@ SORT_COLUMNS = {
 }
 SORT_FIELDS = (*SORT_COLUMNS, "relevance")
 
-# Must stay byte-identical to the expression in migrations/0004_search.sql
-# so PostgreSQL matches the ix_log_entries_search GIN index.
+# Must stay identical to the expression in migrations/0008_search_split_tokens.sql
+# so PostgreSQL matches the ix_log_entries_search GIN index. The translate()
+# set must match search.FTS_SPLIT_CHARS.
 _SEARCH_VECTOR_EXPR = (
-    "to_tsvector('english', coalesce(message, '') || ' ' || coalesce(service, '') || ' ' || "
-    "coalesce(source, '') || ' ' || coalesce(trace_id, '') || ' ' || coalesce(request_id, ''))"
+    "to_tsvector('english', translate(coalesce(message, '') || ' ' || coalesce(service, '') || ' ' || "
+    "coalesce(source, '') || ' ' || coalesce(trace_id, '') || ' ' || coalesce(request_id, ''), "
+    "'/.@:', '    '))"
 )
 
 

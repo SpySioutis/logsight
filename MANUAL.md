@@ -64,6 +64,10 @@ Docker volume. Schema is created by versioned SQL migrations, not by the ORM:
 - `backend/migrations/0005_error_states.sql` — `error_group_states` lifecycle table.
 - `backend/migrations/0006_dashboard_indexes.sql` — composite covering indexes
   for dashboard aggregates.
+- `backend/migrations/0008_search_split_tokens.sql` — rebuilds
+  `ix_log_entries_search` so words inside paths, URLs, e-mails, hostnames
+  and IPs are searchable (`checkout` now finds `/api/checkout`), then runs
+  `ANALYZE` so the planner has statistics for the index expression.
 - `backend/migrations/0007_entry_seq.sql` — nullable `seq` column (original
   file order per import, metadata-only `ADD COLUMN`) + `(import_id, seq)`
   index for the "surrounding lines" view. Entries imported earlier keep
@@ -79,7 +83,8 @@ anything still in `processing` is marked `failed` (with an explanatory
 message) and its partially loaded rows are removed. A failed import never
 leaves partial data behind — simply upload the file again.
 
-Note: `0004_search.sql` builds a GIN index over all stored rows. On tables
+Note: `0004_search.sql` and `0008_search_split_tokens.sql` build a GIN index
+over all stored rows (0008 measured ~25 s per million rows on a laptop). On tables
 with millions of entries this one-time build can take several minutes, during
 which the backend stays unhealthy and the API is unavailable. Let it finish;
 interrupting it only rolls back and retries on the next boot. Progress is

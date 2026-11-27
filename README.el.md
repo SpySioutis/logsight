@@ -80,7 +80,7 @@ logsight/
 │   ├── app/               # config, database, models, schemas, severity,
 │   │   │                  # parsers, grouping, search, import_service, migrate, main
 │   │   └── routers/       # health, imports, logs, dashboard, errors, filters, traces
-│   ├── migrations/        # versioned SQL (0001_initial … 0007_entry_seq)
+│   ├── migrations/        # versioned SQL (0001_initial … 0008_search_split_tokens)
 │   └── tests/             # pytest: severity, parsers, grouping, search, API
 ├── frontend/              # SPA σε Vue 3 + TS (npm)
 │   └── src/               # views, components, api client, stores, utils
@@ -135,8 +135,10 @@ cd frontend && npm test               # 17 δοκιμές vitest
   upload (το `.jsonl` αναλύεται γραμμή-γραμμή). Το ίδιο όριο καλύπτει το
   αποσυμπιεσμένο περιεχόμενο `.gz` / `.zip`.
 - Η αναζήτηση πλήρους κειμένου χρησιμοποιεί εκφραστικό (expression) GIN index
-  με stemming + `ts_rank` στο PostgreSQL· η σουίτα δοκιμών την εξομοιώνει με
-  `ILIKE` στο SQLite.
+  με stemming + `ts_rank` στο PostgreSQL (οι λέξεις μέσα σε διαδρομές, e-mail,
+  hostnames και IPs αναζητούνται ξεχωριστά)· η σουίτα δοκιμών την εξομοιώνει
+  με `ILIKE` στο SQLite. Ένας όρος που ταιριάζει σχεδόν σε κάθε γραμμή είναι
+  αργός σε πίνακες πολλών εκατομμυρίων γραμμών.
 - Η ομαδοποίηση σφαλμάτων είναι ντετερμινιστική (fingerprint), όχι σημασιολογική.
 - Χωρίς authentication/multi-user σε αυτή την έκδοση — χρησιμοποιήστε δικό σας
   έλεγχο πρόσβασης αν το εκθέσετε.

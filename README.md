@@ -49,7 +49,7 @@ logsight/
 │   ├── app/               # config, database, models, schemas, severity,
 │   │   │                  # parsers, grouping, search, import_service, migrate, main
 │   │   └── routers/       # health, imports, logs, dashboard, errors, filters, traces
-│   ├── migrations/        # versioned SQL (0001_initial … 0007_entry_seq)
+│   ├── migrations/        # versioned SQL (0001_initial … 0008_search_split_tokens)
 │   └── tests/             # pytest: severity, parsers, grouping, search, API
 ├── frontend/              # Vue 3 + TS SPA (npm)
 │   └── src/               # views, components, api client, stores, utils
@@ -99,7 +99,7 @@ Documented in MANUAL.md; a full Docker validation is described there too.
 
 - Imports are processed synchronously in the upload request (no background worker yet); very large files take as long as the HTTP request lasts. Upload progress is shown in the UI.
 - A single-document `.json` file must fit within the upload size limit (it is parsed as one document; `.jsonl` streams line-by-line instead). The same limit caps decompressed `.gz` / `.zip` output.
-- Full-text search uses an expression GIN index with stemming + `ts_rank` on PostgreSQL; the test suite emulates it with `ILIKE` on SQLite.
+- Full-text search uses an expression GIN index with stemming + `ts_rank` on PostgreSQL (words inside paths, e-mails, hostnames and IPs are indexed separately); the test suite emulates it with `ILIKE` on SQLite. A term that matches nearly every row is slow on multi-million-row tables.
 - Error grouping is deterministic fingerprinting, not semantic clustering.
 - No authentication/multi-user support in this version — run behind your own access control if exposed.
 

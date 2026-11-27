@@ -34,7 +34,7 @@ backend/
     import_service.py  # upload → temp file + hash → parse (+gzip/zip) → COPY bulk load + progress heartbeats
     migrate.py         # applies backend/migrations/*.sql once each, then fails interrupted imports
     routers/           # health, imports, logs, dashboard, errors, filters, traces
-  migrations/0001_initial.sql … 0007_entry_seq.sql
+  migrations/0001_initial.sql … 0008_search_split_tokens.sql
   tests/               # pytest (SQLite override in conftest.py)
 frontend/
   src/
@@ -63,8 +63,10 @@ framework, database or AI service may be introduced silently.
   stream and never raise on bad line content (per-line `ValueError` only for
   malformed JSONL/JSON).
 - Search: `q` goes through `search.py` (`parse_search_query`); PostgreSQL uses
-  the `ix_log_entries_search` expression GIN index (byte-identical expression
-  in `routers/logs.py`), SQLite uses the `ILIKE` emulation so tests stay
+  the `ix_log_entries_search` expression GIN index (identical expression in
+  `routers/logs.py` and `migrations/0008_search_split_tokens.sql`; the index
+  text has `/ . @ :` translated to spaces and `ParsedQuery.websearch_text`
+  applies the same split, so words inside paths/e-mails/hosts/IPs match), SQLite uses the `ILIKE` emulation so tests stay
   portable. Snippets are HTML-escaped Python-side with `<mark>` hits only.
   Substring matches go through `search.contains_ci()` (escapes `%`/`_`,
   single bound `ILIKE` pattern) — never build `ilike(f"%{value}%")`.
