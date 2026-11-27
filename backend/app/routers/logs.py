@@ -64,6 +64,7 @@ def apply_filters(
     date_from: datetime | None,
     date_to: datetime | None,
     dialect: str = "sqlite",
+    fingerprint: str | None = None,
 ):
     if parsed is not None and parsed.has_fts:
         if dialect == "postgresql" and parsed.websearch_text:
@@ -101,6 +102,8 @@ def apply_filters(
         query = query.filter(LogEntry.trace_id == trace_id)
     if request_id:
         query = query.filter(LogEntry.request_id == request_id)
+    if fingerprint:
+        query = query.filter(LogEntry.fingerprint == fingerprint)
     if date_from:
         query = query.filter(LogEntry.timestamp >= date_from)
     if date_to:
@@ -121,6 +124,7 @@ class LogFilters:
     request_id: str | None
     date_from: datetime | None
     date_to: datetime | None
+    fingerprint: str | None = None
 
 
 def log_filters(
@@ -133,6 +137,7 @@ def log_filters(
     request_id: str | None = Query(default=None, max_length=128),
     date_from: datetime | None = Query(default=None),
     date_to: datetime | None = Query(default=None),
+    fingerprint: str | None = Query(default=None, max_length=64),
 ) -> LogFilters:
     if severity:
         unknown = [s for s in severity if normalize_severity(s) == "UNKNOWN" and s.strip().upper() != "UNKNOWN"]
@@ -141,7 +146,7 @@ def log_filters(
                 status_code=400,
                 detail=f"Unknown severity value(s): {unknown}. Valid: {list(SEVERITIES)}.",
             )
-    return LogFilters(q, severity, source, service, import_id, trace_id, request_id, date_from, date_to)
+    return LogFilters(q, severity, source, service, import_id, trace_id, request_id, date_from, date_to, fingerprint)
 
 
 def _validate_sort(sort: str, direction: str) -> None:
@@ -166,6 +171,7 @@ def _filtered(db: Session, filters: LogFilters, base=None) -> tuple[object, Pars
         date_from=filters.date_from,
         date_to=filters.date_to,
         dialect=dialect,
+        fingerprint=filters.fingerprint,
     )
     return query, parsed, dialect
 

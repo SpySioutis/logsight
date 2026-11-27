@@ -135,6 +135,7 @@ function initialQuery(): LogQuery {
     import_id: typeof q.import_id === 'string' ? q.import_id : undefined,
     trace_id: typeof q.trace_id === 'string' ? q.trace_id : undefined,
     request_id: typeof q.request_id === 'string' ? q.request_id : undefined,
+    fingerprint: typeof q.fingerprint === 'string' ? q.fingerprint : undefined,
     date_from: typeof q.date_from === 'string' ? q.date_from : undefined,
     date_to: typeof q.date_to === 'string' ? q.date_to : undefined,
     sort: typeof q.sort === 'string' && SORT_FIELDS.includes(q.sort) ? q.sort : 'timestamp',
@@ -190,6 +191,7 @@ const activeChips = computed<Chip[]>(() => {
   if (query.service) chips.push({ key: 'service', label: `service:${truncate(query.service, 24)}`, remove: () => (query.service = undefined) })
   if (query.trace_id) chips.push({ key: 'trace', label: `trace:${truncate(query.trace_id, 16)}`, remove: () => (query.trace_id = undefined) })
   if (query.request_id) chips.push({ key: 'req', label: `request:${truncate(query.request_id, 16)}`, remove: () => (query.request_id = undefined) })
+  if (query.fingerprint) chips.push({ key: 'fp', label: `error group:${query.fingerprint.slice(0, 8)}`, remove: () => (query.fingerprint = undefined) })
   if (query.import_id) chips.push({ key: 'import', label: `import:${truncate(query.import_id, 8)}`, remove: () => (query.import_id = undefined) })
   if (query.date_from) chips.push({ key: 'from', label: `from ${query.date_from}`, remove: () => (query.date_from = undefined) })
   if (query.date_to) chips.push({ key: 'to', label: `to ${query.date_to}`, remove: () => (query.date_to = undefined) })
@@ -265,7 +267,7 @@ function scheduleReload() {
 }
 
 watch(
-  () => [query.q, query.severity, query.source, query.service, query.trace_id, query.request_id, query.date_from, query.date_to, query.page_size, query.sort, query.direction],
+  () => [query.q, query.severity, query.source, query.service, query.trace_id, query.request_id, query.fingerprint, query.import_id, query.date_from, query.date_to, query.page_size, query.sort, query.direction],
   scheduleReload,
   { deep: true },
 )
@@ -279,6 +281,7 @@ function resetQuery() {
     import_id: undefined,
     trace_id: undefined,
     request_id: undefined,
+    fingerprint: undefined,
     date_from: undefined,
     date_to: undefined,
     page: 1,
@@ -325,6 +328,7 @@ async function saveCurrentFilter() {
         service: query.service,
         trace_id: query.trace_id,
         request_id: query.request_id,
+        fingerprint: query.fingerprint,
         date_from: query.date_from,
         date_to: query.date_to,
         sort: query.sort,

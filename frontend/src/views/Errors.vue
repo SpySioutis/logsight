@@ -145,19 +145,30 @@ async function reload() {
   }
 }
 
+let openSeq = 0
+
 async function openGroup(g: ErrorGroup) {
+  const seq = ++openSeq
   activeGroup.value = g
   selected.value = null
+  groupPage.value = null
+  trend.value = []
   stateForm.status = g.status
   stateForm.assignee = g.assignee ?? ''
   stateForm.note = g.note ?? ''
   stateNotice.value = ''
-  const [entries, trendRes] = await Promise.all([
-    api.get(`/errors/groups/${g.fingerprint}`, { params: { page_size: 25 } }),
-    api.get(`/errors/groups/${g.fingerprint}/trend`).catch(() => ({ data: [] })),
-  ])
-  groupPage.value = entries.data
-  trend.value = trendRes.data
+  try {
+    const [entries, trendRes] = await Promise.all([
+      api.get(`/errors/groups/${g.fingerprint}`, { params: { page_size: 25 } }),
+      api.get(`/errors/groups/${g.fingerprint}/trend`).catch(() => ({ data: [] })),
+    ])
+    // Ignore responses for a group the user already navigated away from.
+    if (seq !== openSeq) return
+    groupPage.value = entries.data
+    trend.value = trendRes.data
+  } catch {
+    if (seq === openSeq) error.value = 'Could not load entries for this error group.'
+  }
 }
 
 function closeGroup() {
@@ -206,7 +217,9 @@ async function saveState() {
 
 function goToExplorer() {
   if (!activeGroup.value) return
-  router.push({ path: '/logs', query: { q: firstLine(activeGroup.value.sample).slice(0, 80) } })
+  // Filter by the group's fingerprint: searching the sample text matched
+  // only near-identical lines (its timestamp/service tokens became filters).
+  router.push({ path: '/logs', query: { fingerprint: activeGroup.value.fingerprint } })
 }
 
 onMounted(reload)

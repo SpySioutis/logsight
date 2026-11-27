@@ -56,6 +56,7 @@ export interface LogQuery {
   import_id?: string
   trace_id?: string
   request_id?: string
+  fingerprint?: string
   date_from?: string
   date_to?: string
   sort?: string
@@ -73,6 +74,7 @@ export function toParams(query: LogQuery): Record<string, string | string[]> {
   if (query.import_id) params.import_id = query.import_id
   if (query.trace_id) params.trace_id = query.trace_id
   if (query.request_id) params.request_id = query.request_id
+  if (query.fingerprint) params.fingerprint = query.fingerprint
   if (query.date_from) params.date_from = query.date_from
   if (query.date_to) params.date_to = query.date_to
   if (query.sort) params.sort = query.sort

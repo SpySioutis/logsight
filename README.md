@@ -80,7 +80,7 @@ Base path `/api`. Full reference with schemas at `/api/docs` (Swagger UI).
 
 - `GET /api/health`
 - `POST /api/imports/upload` · `GET /api/imports` · `GET /api/imports/{id}` · `DELETE /api/imports/{id}`
-- `GET /api/logs` (q with `"phrase" -exclude field:value` operators, severity[], source, service, import_id, trace_id, request_id, date_from, date_to, sort incl. `relevance`, direction, page, page_size) · `GET /api/logs/export` (same filters, `format=csv|jsonl`) · `GET /api/logs/histogram` (same filters) · `GET /api/logs/{id}` · `GET /api/logs/{id}/context` · `GET /api/logs/meta/facets`
+- `GET /api/logs` (q with `"phrase" -exclude field:value` operators, severity[], source, service, import_id, trace_id, request_id, fingerprint, date_from, date_to, sort incl. `relevance`, direction, page, page_size) · `GET /api/logs/export` (same filters, `format=csv|jsonl`) · `GET /api/logs/histogram` (same filters) · `GET /api/logs/{id}` · `GET /api/logs/{id}/context` · `GET /api/logs/meta/facets`
 - `GET /api/dashboard/summary|timeline|severity-distribution|top-sources|top-errors`
 - `GET /api/errors/groups` (`status` filter) · `GET /api/errors/groups/{fingerprint}` · `PUT /api/errors/groups/{fingerprint}/state` · `GET /api/errors/groups/{fingerprint}/trend`
 - `GET /api/traces` · `GET /api/traces/{id}`

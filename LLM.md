@@ -140,7 +140,8 @@ logsight/
   …), numeric levels (Python logging thresholds), numeric strings;
   anything else → `UNKNOWN`. **Never** raise or drop on unknown input.
 - **`grouping.py`**: `normalize_message()` lowercases and masks volatile
-  tokens (`<ts>` for ISO / syslog / clock timestamps — applied first, since
+  tokens (pure-digit tokens are always `<n>` whatever their length — hex
+  masks require an a–f letter; `<ts>` for ISO / syslog / clock timestamps — applied first, since
   in `2024-05-01t10:00` the hour is glued to the `t` and escapes the
   `\b`-anchored number rules — then `<uuid> <ip> <hex> <n>`, long quoted
   strings) so recurring errors share one `fingerprint()` (SHA-256 hex,
@@ -214,7 +215,7 @@ logsight/
 | `GET /health` | liveness + `SELECT 1` DB check | — |
 | `POST /imports/upload` | multipart upload → 201 (or 400/413/422) | `file`; errors: 400 type, 413 size, 422 parse failure |
 | `GET /imports`, `GET /imports/{id}`, `DELETE /imports/{id}` | history / detail / delete (204, cascades to entries) | — |
-| `GET /logs` | explorer page | `q`, `severity[]`, `source`, `service`, `import_id`, `trace_id`, `request_id`, `date_from/to`, `sort` (timestamp/severity/source/service/**relevance**), `direction`, `page`, `page_size` (≤500) |
+| `GET /logs` | explorer page | `q`, `severity[]`, `source`, `service`, `import_id`, `trace_id`, `request_id`, `fingerprint` (exact, = one error group), `date_from/to`, `sort` (timestamp/severity/source/service/**relevance**), `direction`, `page`, `page_size` (≤500) |
 | `GET /logs/export` | stream all matches as CSV or JSONL (attachment); one `yield_per` server-side-cursor query, ≤100k rows; CSV cells starting `= + - @` get a `'` prefix | same filters as `/logs` + `format` (csv/jsonl, 400 otherwise), `sort`, `direction`, `limit` |
 | `GET /logs/histogram` | zero-filled counts (total + errors) over time for the filters; bucket adapts to span: ≤3 h minute, ≤7 d hour, ≤365 d day, else month (≤400 points) | same filters as `/logs` |
 | `GET /logs/{id}` | single entry (404) | — |
@@ -259,7 +260,8 @@ with a helpful message, never 500. Pydantic `Literal` mismatches → 422.
     API calls use `apiParams()` (dates → UTC); the URL keeps local dates.
   - `Errors.vue`: status segmented filter + groups table
     (severity/status badges) + detail panel with lifecycle editor,
-    `TrendSpark`, entries table.
+    `TrendSpark`, entries table. "Open in Explorer" navigates with
+    `?fingerprint=` (whole group), not a text search of the sample.
   - `Traces.vue` (`/traces`, sidebar entry): recent-trace list with
     jump-to-ID box; links to detail.
   - `Imports.vue`: drag-and-drop upload with progress, import history

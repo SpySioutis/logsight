@@ -520,3 +520,12 @@ def test_like_wildcards_in_filters_are_literal(client):
     assert total(q="100%") == 1
     assert total(q="-source:web_1") == 2
     assert total(source="WEB") == 3  # still case-insensitive
+
+
+def test_fingerprint_filter_lists_whole_group(client):
+    upload(client, "app.log", PLAIN_LOG)
+    group = next(g for g in client.get("/api/errors/groups").json() if "connection refused" in g["sample"])
+    page = client.get("/api/logs", params={"fingerprint": group["fingerprint"]}).json()
+    assert page["total"] == group["count"] == 2
+    exported = client.get("/api/logs/export", params={"fingerprint": group["fingerprint"]}).text
+    assert len(exported.splitlines()) == 3
