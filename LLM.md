@@ -343,9 +343,11 @@ Critical database rules (several were learned the hard way on a 5.8M-row,
    `SELECT * FROM pg_stat_progress_create_index;`.
 9. **Dashboard aggregates must be single-pass.** `/dashboard/summary` was 8
    sequential full-table queries (~30 s on a large table); it is now one
-   `SELECT` with `COUNT … FILTER (WHERE …)` + `MIN/MAX` +
-   `COUNT(DISTINCT)`. Splitting it further does not help (verified: the
-   timestamp/distinct half still scans). If the dashboard ever needs more,
+   `SELECT` with `COUNT … FILTER (WHERE …)` + `MIN/MAX`, plus the distinct
+   source count as a separate `SELECT count(*) FROM (SELECT DISTINCT
+   source …)`. Never put `COUNT(DISTINCT …)` back into the main aggregate:
+   it forces a sort of every row (measured on 2M rows: 5.9 s inside the
+   aggregate vs 0.16 s aggregate + 0.12 s hash-aggregated subquery). If the dashboard ever needs more,
    the next step is a pre-computed summary table — an architectural change
    needing approval, not more indexes.
 10. **VACUUM matters more than indexes after bulk deletes.** A table with

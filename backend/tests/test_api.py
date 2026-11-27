@@ -83,6 +83,7 @@ def test_dashboard_and_errors_from_real_data(client):
     assert summary["total"] == 5
     assert summary["errors"] == 3  # 2 ERROR + 1 CRITICAL
     assert summary["critical"] == 1
+    assert summary["sources"] == 3  # web-1, web-2, worker-1 (NULL not counted)
 
     groups = client.get("/api/errors/groups").json()
     refused = [g for g in groups if "connection refused" in g["sample"]]
