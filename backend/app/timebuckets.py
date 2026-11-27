@@ -74,7 +74,9 @@ def step_back(value: datetime, label: str, steps: int) -> datetime:
     try:
         if label == "month":
             index = value.year * 12 + value.month - 1 - steps
-            return value.replace(year=max(1, index // 12), month=index % 12 + 1)
+            if index < 12:  # before January of year 1
+                return datetime.min.replace(tzinfo=timezone.utc)
+            return value.replace(year=index // 12, month=index % 12 + 1)
         unit = {"minute": timedelta(minutes=1), "hour": timedelta(hours=1), "day": timedelta(days=1)}[label]
         return value - unit * steps
     except (OverflowError, ValueError):
@@ -82,7 +84,7 @@ def step_back(value: datetime, label: str, steps: int) -> datetime:
 
 
 def zero_filled(
-    counts: dict[datetime, tuple[int, int]], label: str, max_points: int
+    counts: dict[datetime, tuple[int, int]], label: str, max_points: int, keep_newest: bool = True
 ) -> list[tuple[datetime, int, int]]:
     """Every bucket from the first to the last key, missing ones as zeros.
 
@@ -92,7 +94,7 @@ def zero_filled(
     if not counts:
         return []
     end = max(counts)
-    cursor = max(min(counts), step_back(end, label, max_points - 1))
+    cursor = max(min(counts), step_back(end, label, max_points - 1)) if keep_newest else min(counts)
     out: list[tuple[datetime, int, int]] = []
     while cursor <= end and len(out) < max_points:
         total, errors = counts.get(cursor, (0, 0))

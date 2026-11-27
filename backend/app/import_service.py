@@ -150,12 +150,26 @@ def _copy_flush(db: Session, import_id: str, batch: list[dict]) -> None:
     db.commit()
 
 
+def _to_utc(value: datetime | None) -> datetime | None:
+    """Store instants as UTC (SQLite drops offsets; PG keeps the instant).
+
+    Near the ends of Python's range (e.g. .NET DateTime.MinValue written
+    as "0001-01-01T00:30:00+01:00") the conversion overflows: keep the
+    original value then — bad line content must never abort an import.
+    """
+    if value is None:
+        return None
+    try:
+        return value.astimezone(timezone.utc)
+    except (OverflowError, ValueError):
+        return value
+
+
 def _row(entry: parsers.ParsedEntry, seq: int) -> dict:
     return {
         "seq": seq,
         "id": str(uuid.uuid4()),
-        # Stored as UTC: SQLite drops offsets (PG keeps the instant anyway).
-        "timestamp": entry.timestamp.astimezone(timezone.utc) if entry.timestamp else None,
+        "timestamp": _to_utc(entry.timestamp),
         "severity": entry.severity,
         "service": entry.service,
         "source": entry.source,

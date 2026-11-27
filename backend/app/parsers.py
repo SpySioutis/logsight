@@ -337,6 +337,11 @@ def _coerce_timestamp(value: Any) -> datetime | None:
     if isinstance(value, datetime):
         return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
     if isinstance(value, (int, float)):
+        if isinstance(value, int) or float(value).is_integer():
+            # JSON numbers get the same compact-date check as strings.
+            compact = _compact_date(str(int(value)))
+            if compact is not None:
+                return compact
         number = float(value)
         if number > 1e14:  # microseconds
             number /= 1e6
@@ -351,14 +356,7 @@ def _coerce_timestamp(value: Any) -> datetime | None:
         if _NUMERIC.fullmatch(stripped):
             # Compact dates first ("20240501123456"), then epochs: CSV
             # delivers every value as text, so "1714557600" is an epoch.
-            for fmt in _COMPACT_FORMATS.get(len(stripped), ()):
-                try:
-                    return datetime.strptime(stripped, fmt).replace(tzinfo=timezone.utc)
-                except ValueError:
-                    pass
-            if len(stripped.split(".")[0]) not in (10, 13, 16):
-                return None  # not seconds / ms / µs since the epoch
-            return _coerce_timestamp(float(stripped))
+            return _compact_date(stripped) or _coerce_timestamp(float(stripped))
         parsed = _parse_iso(stripped)
         if parsed is not None:
             return parsed
@@ -375,6 +373,18 @@ def _coerce_timestamp(value: Any) -> datetime | None:
 
 _NUMERIC = re.compile(r"\d{9,16}(?:\.\d+)?")
 _COMPACT_FORMATS = {14: ("%Y%m%d%H%M%S",), 12: ("%Y%m%d%H%M",)}
+
+
+def _compact_date(digits: str) -> datetime | None:
+    """YYYYMMDDHHMM[SS] written as a number; None if it is not one."""
+    for fmt in _COMPACT_FORMATS.get(len(digits), ()):
+        try:
+            parsed = datetime.strptime(digits, fmt)
+        except ValueError:
+            continue
+        if 1970 <= parsed.year <= 2100:  # else: more likely an epoch
+            return parsed.replace(tzinfo=timezone.utc)
+    return None
 
 
 def parse_json_object(obj: dict[str, Any], raw: str) -> ParsedEntry:

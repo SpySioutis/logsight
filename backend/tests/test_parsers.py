@@ -247,4 +247,7 @@ def test_compact_numeric_dates_are_not_epochs():
     assert ts("20240501123456").isoformat() == "2024-05-01T12:34:56+00:00"
     assert ts("202405011234").isoformat() == "2024-05-01T12:34:00+00:00"
     assert ts("1714557600").year == 2024
-    assert ts("12345678901") is None  # 11 digits: neither a date nor an epoch unit
+    assert ts("946684800").year == 2000  # 9-digit epochs (before Sept 2001) still work
+    assert ts(20240501123456).isoformat() == "2024-05-01T12:34:56+00:00"  # JSON number
+    assert ts(202405011234).isoformat() == "2024-05-01T12:34:00+00:00"
+    assert ts(1714557600123).year == 2024  # 13-digit ms epoch is not a compact date

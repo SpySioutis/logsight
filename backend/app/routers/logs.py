@@ -354,7 +354,8 @@ def histogram(
     horizon = datetime.now(timezone.utc) + timedelta(days=1)
     plotted = query.filter(LogEntry.timestamp <= horizon)
     first, last = plotted.with_entities(func.min(LogEntry.timestamp), func.max(LogEntry.timestamp)).one()
-    if first is None:
+    only_future = first is None
+    if only_future:
         plotted = query
         first, last = query.with_entities(func.min(LogEntry.timestamp), func.max(LogEntry.timestamp)).one()
     first, last = as_utc(first), as_utc(last)
@@ -378,7 +379,9 @@ def histogram(
         bucket=label,
         points=[
             TimelinePoint(bucket=key.isoformat(), total=total, errors=errors)
-            for key, total, errors in zero_filled(counts, label, MAX_HISTOGRAM_POINTS)
+            # Only far-future data: keep the oldest buckets, so a year-9999
+            # mis-parse does not push e.g. 2099 entries off the chart.
+            for key, total, errors in zero_filled(counts, label, MAX_HISTOGRAM_POINTS, keep_newest=not only_future)
         ],
     )
 

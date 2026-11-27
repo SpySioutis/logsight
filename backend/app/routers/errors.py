@@ -181,6 +181,12 @@ def group_trend(
     if latest is None or first is None:
         return []
     end = truncate(latest, bucket)
+    if truncate(first, bucket) > end:
+        # Group only has future-dated entries: window on its own newest one.
+        own_last = as_utc(
+            db.query(func.max(LogEntry.timestamp)).filter(LogEntry.fingerprint == fingerprint).scalar()
+        )
+        end = truncate(own_last or first, bucket)
     start = max(truncate(first, bucket), step_back(end, bucket, limit - 1))
     trunc = trunc_expr(db.get_bind().dialect.name, bucket)
     rows = (

@@ -578,3 +578,27 @@ def test_refingerprint_state_follows_split_groups(client, db_session):
     refingerprint(db_session)
     groups = client.get("/api/errors/groups").json()
     assert len(groups) == 2 and {g["status"] for g in groups} == {"muted"}
+
+
+def test_edge_of_range_offsets_do_not_abort_import(client):
+    # .NET DateTime.MinValue with a local offset: UTC conversion overflows.
+    resp = upload(client, "edge.log", b"0001-01-01T00:30:00+01:00 INFO x\n2024-05-01T10:00:00Z INFO good\n")
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["parsed_count"] == 2
+    resp = upload(client, "edge.jsonl", b'{"timestamp": "9999-12-31T23:00:00-05:00", "msg": "y"}\n')
+    assert resp.status_code == 201, resp.text
+
+
+def test_trend_for_group_with_only_future_entries(client):
+    upload(client, "now.log", b"2026-11-01T10:00:00Z INFO present\n")
+    upload(client, "future.log", b"2099-01-01T10:00:00Z ERROR boom\n2099-01-02T10:00:00Z ERROR boom\n")
+    group = client.get("/api/errors/groups").json()[0]
+    trend = client.get(f"/api/errors/groups/{group['fingerprint']}/trend").json()
+    assert sum(p["count"] for p in trend) == group["count"] == 2
+
+
+def test_histogram_only_future_keeps_oldest(client):
+    upload(client, "f.log", b"2099-01-01T10:00:00Z INFO future a\nINFO future b valid until 9999-12-31 23:59:59\n")
+    hist = client.get("/api/logs/histogram", params={"q": "future"}).json()
+    assert hist["points"][0]["bucket"].startswith("2099-01")
+    assert hist["points"][0]["total"] == 1
