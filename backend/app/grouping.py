@@ -10,6 +10,16 @@ from __future__ import annotations
 import hashlib
 import re
 
+# Applied to lower-cased text, before the generic number rules: in ISO
+# timestamps the hour is glued to the "t" ("t10:00"), so \b-anchored number
+# masks never see it and errors split into one group per hour of day.
+_ISO_TS = re.compile(
+    r"\d{4}-\d{2}-\d{2}(?:[t ]\d{2}:\d{2}(?::\d{2})?(?:[.,]\d+)?(?:z|[+-]\d{2}(?::?\d{2})?)?)?"
+)
+_SYSLOG_TS = re.compile(
+    r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\b"
+)
+_TIME = re.compile(r"\b\d{2}:\d{2}:\d{2}(?:[.,]\d+)?\b")
 _UUID = re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b")
 _HEX = re.compile(r"\b0x[0-9a-fA-F]+\b|\b[0-9a-fA-F]{7,}\b")
 _IP = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b")
@@ -22,6 +32,9 @@ _WS = re.compile(r"\s+")
 def normalize_message(message: str) -> str:
     """Reduce a log message to its stable shape for grouping."""
     text = message.strip().lower()
+    text = _ISO_TS.sub("<ts>", text)
+    text = _SYSLOG_TS.sub("<ts>", text)
+    text = _TIME.sub("<ts>", text)
     text = _UUID.sub("<uuid>", text)
     text = _IP.sub("<ip>", text)
     text = _HEX.sub("<hex>", text)

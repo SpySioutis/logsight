@@ -24,3 +24,21 @@ def test_deterministic_and_bounded():
     assert fp == fingerprint("boom")
     assert len(fp) == 32
     assert len(normalize_message("x " * 1000)) <= 500
+
+
+def test_timestamps_do_not_split_groups():
+    # The hour in "T10:00" used to survive masking ("t10"), splitting one
+    # error into a group per hour of day.
+    same = [
+        "2024-05-01T10:00:00Z ERROR boom",
+        "2024-05-05T09:00:00Z ERROR boom",
+        "2024-06-30T23:59:59.123+02:00 ERROR boom",
+        "2024-06-30 23:59:59,123 ERROR boom",
+    ]
+    assert len({fingerprint(m) for m in same}) == 1
+    assert fingerprint("May  1 08:11:00 host app: boom") == fingerprint("Jun 12 18:01:02 host app: boom")
+    assert normalize_message("2024-05-01T10:00:00Z ERROR boom") == "<ts> error boom"
+
+
+def test_timestamp_rules_keep_messages_distinct():
+    assert fingerprint("2024-05-01T10:00:00Z ERROR boom") != fingerprint("2024-05-01T10:00:00Z ERROR bang")
