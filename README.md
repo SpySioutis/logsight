@@ -23,11 +23,11 @@ See [MANUAL.md](MANUAL.md) for manual startup, configuration, migrations, testin
 
 ## Features
 
-- **Log import** — plain text (`.log`, `.txt`, incl. RFC 5424 syslog, nginx/Apache access and error logs, and multiline stacktraces), JSON Lines (`.jsonl`, `.ndjson`), structured JSON (`.json`) and CSV (`.csv`); gzip (`.gz`) and bundles (`.zip`) accepted; streaming parse, PostgreSQL COPY bulk load, 1 GB default limit (raw + decompressed), live progress percentage, duplicate detection by content hash, import history.
-- **Log explorer** — server-side pagination, sorting (incl. relevance ranking), full-text search with operators (`"exact phrase"`, `-exclude`, `service:`, `source:`, `severity:`, `trace:`, `request:`), highlighted snippets, date-range, severity, source, service, trace and request filters (combinable, shareable via URL), a volume histogram of the current result set (click a bar to zoom into that period), CSV / JSONL export of all matching entries (up to 100,000), log details drawer with surrounding lines from the original file, copy-to-clipboard and trace links.
+- **Log import** — plain text (`.log`, `.txt`, incl. RFC 5424 syslog, nginx/Apache access and error logs, and multiline stacktraces), JSON Lines (`.jsonl`, `.ndjson`), structured JSON (`.json`) and CSV (`.csv`); gzip (`.gz`) and bundles (`.zip`) accepted; streaming parse, PostgreSQL COPY bulk load, 1 GB default limit (raw + decompressed), live progress percentage, duplicate detection by content hash, several files per upload (queued), import history; timestamps keep their UTC offset; a failed or interrupted import never leaves partial data.
+- **Log explorer** — server-side pagination, sorting (incl. relevance ranking), full-text search with operators (`"exact phrase"`, `-exclude`, `service:`, `source:`, `severity:`, `trace:`, `request:`), highlighted snippets, date-range, severity, source, service, trace and request filters (combinable, shareable via URL), a volume histogram of the current result set (click a bar to zoom into that period), CSV / JSONL export of all matching entries (up to 100,000), log details drawer with surrounding lines from the original file, one-click filter by service / source / import / error group, copy-to-clipboard and trace links.
 - **Severity normalization** — TRACE / DEBUG / INFO / WARN / WARNING / ERROR / FATAL / CRITICAL / UNKNOWN. Aliases (`warn`, `err`, `crit`, numeric levels…) are normalized; unknown values become UNKNOWN and are never discarded.
-- **Dashboard** — totals, errors, warnings, criticals, logs over time, severity distribution, most active sources, most frequent errors (muted groups excluded). Empty states when nothing is imported.
-- **Error analysis** — deterministic fingerprint grouping (masks timestamps, IPs, UUIDs, numbers, hex ids), counts, first/last occurrence, per-group trend sparkline, lifecycle status (open/acknowledged/resolved/muted) with assignee and note, drill-down to matching entries.
+- **Dashboard** — totals, errors, warnings, criticals, logs over time (all data with adaptive buckets, or the last 60 days / hours; empty periods shown as zero), severity distribution, most active sources, most frequent errors (muted groups excluded). Empty states when nothing is imported.
+- **Error analysis** — deterministic fingerprint grouping (masks timestamps, IPs, UUIDs, numbers, hex ids), counts, first/last occurrence, per-group trend sparkline, lifecycle status (open/acknowledged/resolved/muted) with assignee and note, drill-down to matching entries, "Open in Explorer" for the whole group.
 - **Trace correlation** — `trace_id` / `request_id` extracted at import; traces overview page plus a per-trace waterfall timeline across services with duration, services and severities.
 - **Saved filters** — create, edit, delete and re-apply search presets.
 - **Modern observability UI** — dark-first Vue 3 + TypeScript SPA with collapsible sidebar navigation, KPI dashboard, smooth charts, loading skeletons and full light-theme support.
@@ -89,8 +89,8 @@ Base path `/api`. Full reference with schemas at `/api/docs` (Swagger UI).
 ## Tests
 
 ```sh
-cd backend && uv run pytest -q        # 68 tests: unit + API integration (SQLite)
-cd frontend && npm test               # 17 vitest tests
+cd backend && uv run pytest -q        # 88 tests: unit + API integration (SQLite)
+cd frontend && npm test               # 18 vitest tests
 ```
 
 Documented in MANUAL.md; a full Docker validation is described there too.

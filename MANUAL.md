@@ -74,7 +74,7 @@ Docker volume. Schema is created by versioned SQL migrations, not by the ORM:
   `seq` NULL and fall back to timestamp order.
 
 Migrations run automatically every time the backend container starts
-(`python -m app.migrate` before uvicorn); already-applied files are recorded
+(`python -m app.migrate --recover` before uvicorn); already-applied files are recorded
 in `schema_migrations` and skipped. To apply them manually against a running
 stack, see §11.
 
@@ -151,7 +151,7 @@ docker compose exec backend python -m app.migrate
 
 ## 12. How to run tests
 
-Backend (68 tests: severity, parsers, grouping, search + API integration on isolated SQLite):
+Backend (88 tests: severity, parsers, grouping, search + API integration on isolated SQLite):
 
 ```sh
 cd backend
@@ -159,7 +159,7 @@ uv sync
 uv run pytest -q
 ```
 
-Frontend (17 vitest tests: severity/format/highlight utils, API param builder, date conversion, export URL):
+Frontend (18 vitest tests: severity/format/highlight utils, API param builder, date conversion, export URL):
 
 ```sh
 cd frontend
@@ -197,6 +197,16 @@ cat logsight-backup.sql | docker compose exec -T db psql -U logsight -d logsight
 ```
 
 ## 14a. Upgrading: re-fingerprinting stored errors
+
+Checklist when upgrading an existing installation to this release:
+
+1. `docker compose up --build -d` — migrations 0007 and 0008 apply on boot.
+   0008 rebuilds the search index (~25 s per million rows; the API is
+   unavailable meanwhile — watch `docker compose logs -f backend`).
+2. `docker compose exec backend python -m app.refingerprint` — once, to merge
+   error groups that older fingerprint rules had split (details below).
+
+### Re-fingerprinting
 
 Error groups are keyed by a deterministic fingerprint of the message. When
 the normalisation rules change (e.g. timestamps inside messages are now

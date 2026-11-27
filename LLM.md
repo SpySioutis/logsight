@@ -14,24 +14,31 @@ trace timelines, and saved filter presets. There is no log shipper, no
 background worker, and no authentication — uploads are processed
 synchronously inside the HTTP request.
 
-Feature summary (v1 + search/traces/lifecycle release):
+Feature summary (v1 + search/traces/lifecycle + explorer/accuracy releases):
 
-- **Import**: `.log`, `.txt` (plain text incl. RFC 5424 syslog and multiline
-  stacktraces), `.jsonl`/`.ndjson`, `.json`, `.csv`; `.gz` single files and
-  `.zip` bundles; duplicate detection by SHA-256 content hash.
+- **Import**: `.log`, `.txt` (plain text incl. RFC 5424 syslog, nginx/Apache
+  access & error logs, multiline stacktraces), `.jsonl`/`.ndjson`, `.json`,
+  `.csv`; `.gz` single files and `.zip` bundles; several files per upload
+  (queued in the UI); duplicate detection by SHA-256 content hash;
+  timestamps keep their offset and are stored as UTC; failed/interrupted
+  imports leave no partial rows.
 - **Explorer**: server-side search with a query language (`"exact phrase"`,
   `-exclude`, `service:`/`source:`/`severity:`/`trace:`/`request:`), plus
   severity/source/service/trace/request/date filters, sorting (incl.
   relevance), pagination, highlighted `<mark>` snippets, result-set volume
   histogram (click a bar to zoom the date range), CSV/JSONL export of all
-  matches (≤100k), entry drawer with surrounding lines in original file order.
+  matches (≤100k), `fingerprint` filter (= one error group), entry drawer
+  with surrounding lines in original file order and one-click filters.
 - **Dashboard**: totals, severity distribution, logs-over-time (All =
   adaptive full history, Day/Hour = last 60 buckets, zero-filled), top sources,
   top errors (muted groups excluded).
 - **Errors**: deterministic fingerprint grouping with open/acknowledged/
-  resolved/muted lifecycle, assignee, note, per-group trend sparkline.
+  resolved/muted lifecycle, assignee, note, zero-filled trend sparkline,
+  "Open in Explorer" by fingerprint; `python -m app.refingerprint` after
+  grouping-rule changes.
 - **Traces**: `trace_id`/`request_id` extracted at import; timeline view per
-  trace across services.
+  trace across services; its Explorer button filters by `trace_id` or
+  `request_id`, whichever the id is.
 - **Saved filters**: named, reusable search presets (CRUD).
 
 ## 2. System architecture
@@ -49,7 +56,7 @@ Request flow: browser → nginx `:80` → `/api/*` reverse-proxied to
 client-side routes like `/traces/:id` work on refresh).
 
 Boot sequence (important): the backend container runs
-`python -m app.migrate` **before** uvicorn. Migrations must fully apply or
+`python -m app.migrate --recover` **before** uvicorn. Migrations must fully apply or
 the API never starts. `restart: unless-stopped` means a **failing migration
 causes a crash loop** (container exits → Docker restarts it → migration
 retries). Never write a migration that cannot complete; on a large table,
@@ -61,7 +68,10 @@ Data flow for an upload:
 browser --multipart--> POST /api/imports/upload
   -> import_service.import_upload():
      stream to temp file (1 MB chunks, MAX_UPLOAD_MB cap, SHA-256)
-     -> duplicate check by hash -> parse (streaming) -> batch INSERT (1000 rows)
+     -> duplicate check by hash -> (gunzip / unzip, decompressed-size cap)
+     -> parse (streaming, entries numbered `seq` in file order)
+     -> COPY bulk load in 5000-row batches (+ progress heartbeat per batch)
+     -> on any failure: delete the rows already loaded, status "failed"
   -> { import record, duplicate: bool }
 ```
 
@@ -82,17 +92,17 @@ logsight/
 │   │   ├── timebuckets.py     # portable bucketing (date_trunc / strftime) + zero-fill helpers
 │   │   ├── parsers.py         # streaming parsers -> ParsedEntry (never raise on line content)
 │   │   ├── search.py          # q-language parser, SQLite ILIKE emulation, snippet highlighting
-│   │   ├── import_service.py  # upload -> temp+hash -> decompress -> parse -> batch insert
+│   │   ├── import_service.py  # upload -> temp+hash -> decompress -> parse -> COPY batches; failure cleanup
 │   │   ├── migrate.py         # versioned *.sql runner via schema_migrations table + interrupted-import recovery
 │   │   └── routers/           # health, imports, logs, dashboard, errors, filters, traces
 │   ├── migrations/            # 0001_initial … 0008_search_split_tokens (see §6)
-│   ├── tests/                 # pytest, 68 tests, isolated in-memory SQLite per test
+│   ├── tests/                 # pytest, 88 tests, isolated in-memory SQLite per test
 │   ├── pyproject.toml + uv.lock
 │   └── .venv/                 # local env (gitignored), created by `uv sync`
 ├── frontend/
 │   ├── src/
 │   │   ├── api/client.ts      # axios instance, shared TS interfaces, toParams(), apiParams() (local→UTC dates), exportUrl()
-│   │   ├── utils/             # severity.ts, format.ts, highlight.ts (+ *.test.ts; 17 vitest tests incl. api/client.test.ts)
+│   │   ├── utils/             # severity.ts, format.ts, highlight.ts (+ *.test.ts; 18 vitest tests incl. api/client.test.ts)
 │   │   ├── stores/settings.ts # Pinia: theme + pageSize + sidebar, persisted to localStorage
 │   │   ├── assets/styles.css  # design system: dark-first tokens, light theme, all components
 │   │   ├── components/        # AppIcon (inline Lucide set), SeverityBadge, StatusBadge,
@@ -304,7 +314,7 @@ with a helpful message, never 500. Pydantic `Literal` mismatches → 422.
   to `/logs?<field>=…`);
   `TimeChart` is a dependency-free smooth SVG area chart with hover
   crosshair; `TrendSpark` is a dependency-free SVG area sparkline.
-- **Tests**: 17 vitest tests (`client.test.ts`, `severity.test.ts`,
+- **Tests**: 18 vitest tests (`client.test.ts`, `severity.test.ts`,
   `format.test.ts`, `highlight.test.ts`). Node ≥22 required
   (`nvm use 22` — system node may be ancient).
 
@@ -399,11 +409,11 @@ docker compose up --build -d               # detached
 docker compose logs -f backend             # API logs (watch migrations here)
 docker compose exec backend python -m app.migrate   # manual migration run
 
-cd backend && uv sync && uv run pytest -q  # 68 tests (uv-managed, .venv local)
+cd backend && uv sync && uv run pytest -q  # 88 tests (uv-managed, .venv local)
 cd backend && uv run uvicorn app.main:app --reload  # local API (needs PG + DATABASE_URL)
 
 cd frontend && npm install && npm run dev  # Vite, /api proxied to :8000
-cd frontend && npm test                    # 17 vitest tests (needs node ≥22)
+cd frontend && npm test                    # 18 vitest tests (needs node ≥22)
 cd frontend && npm run build               # typecheck + production bundle
 ```
 
@@ -444,7 +454,9 @@ docker compose down                        # keeps pgdata volume
    `models.py` (SQLite-safe) + `schemas.py`, then use it.
 3. PG-only SQL? You must validate against the container — SQLite tests
    cannot cover it. Use `EXPLAIN` for anything touching 5M+ rows.
-4. API change? Update `frontend/src/api/client.ts` types + `toParams()`,
+4. API change? Update `frontend/src/api/client.ts` types + `toParams()`
+   (and `apiParams()` for date handling), the shared `log_filters`
+   dependency if it is an explorer filter,
    the consuming view/component, and `SavedFilters.describe()` if it adds
    a filter dimension.
 5. Run `uv run pytest -q` and `npm test` + `npm run build` in-session.

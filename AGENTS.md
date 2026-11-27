@@ -6,7 +6,8 @@ Three Docker Compose services (`compose.yaml` at repo root):
 
 - `db` — PostgreSQL 17, persistent `pgdata` volume, `pg_isready` healthcheck.
 - `backend` — built from root `Dockerfile` (uv + FastAPI on :8000). On boot it
-  runs `python -m app.migrate` (versioned SQL in `backend/migrations/`) and
+  runs `python -m app.migrate --recover` (versioned SQL in
+  `backend/migrations/`, then fails imports a crash left `processing`) and
   then uvicorn. Health: `GET /api/health`.
 - `frontend` — built from `frontend/Dockerfile` (node build → nginx serve on
   :80, `/api/` reverse-proxied to `backend:8000`, SPA fallback).
@@ -117,11 +118,11 @@ cd frontend && npm test && npm run build
 
 ## Testing commands
 
-- `cd backend && uv run pytest -q` — 68 tests. API tests use an isolated
+- `cd backend && uv run pytest -q` — 88 tests. API tests use an isolated
   in-memory SQLite DB (`tests/conftest.py`); SQLite-only branches (e.g.
   `strftime` timeline bucketing, `ILIKE` search) exist solely to keep these
   tests portable.
-- `cd frontend && npm test` — 17 vitest tests.
+- `cd frontend && npm test` — 18 vitest tests.
 
 Never claim tests pass without running them in-session.
 
@@ -155,7 +156,8 @@ Never claim tests pass without running them in-session.
   `yield_per` (no OFFSET re-querying), capped at 100,000 rows, with CSV cells
   starting with `= + - @` prefixed by `'` (formula injection).
 - Failed imports never keep partial rows (`_mark_failed()` deletes them);
-  imports left `processing` by a crash are failed at boot.
+  imports left `processing` by a crash are failed at boot (only via
+  `migrate --recover`; a manual `python -m app.migrate` never touches imports).
 - Upload: extension allowlist (`.log .txt .jsonl .ndjson .json .csv`, plus
   `.gz` / `.zip`) + `MAX_UPLOAD_MB` cap (413) applied to raw and decompressed
   bytes, content-hash duplicate detection (`status: "duplicate"`, no
