@@ -29,11 +29,11 @@
         <h3>Metadata</h3>
         <dl class="kv">
           <dt>Service</dt>
-          <dd>{{ current.service ?? '—' }}</dd>
+          <dd>{{ current.service ?? '—' }} <button v-if="current.service" class="ghost sm icon-only kv-filter" :title="`Show only entries with this service`" @click="applyFilter('service', current.service)"><AppIcon name="funnel" :size="12" /></button></dd>
           <dt>Source</dt>
-          <dd class="mono" style="font-size: 12.5px">{{ current.source ?? '—' }}</dd>
+          <dd class="mono" style="font-size: 12.5px">{{ current.source ?? '—' }} <button v-if="current.source" class="ghost sm icon-only kv-filter" :title="`Show only entries with this source`" @click="applyFilter('source', current.source)"><AppIcon name="funnel" :size="12" /></button></dd>
           <dt>Import</dt>
-          <dd class="mono" style="font-size: 12px">{{ shortId(current.import_id) }}</dd>
+          <dd class="mono" style="font-size: 12px">{{ shortId(current.import_id) }} <button v-if="current.import_id" class="ghost sm icon-only kv-filter" :title="`Show only entries with this import_id`" @click="applyFilter('import_id', current.import_id)"><AppIcon name="funnel" :size="12" /></button></dd>
           <dt>Trace</dt>
           <dd class="mono" style="font-size: 12px">
             <RouterLink v-if="current.trace_id" :to="`/traces/${encodeURIComponent(current.trace_id)}`">
@@ -49,7 +49,7 @@
             <template v-else>—</template>
           </dd>
           <dt>Fingerprint</dt>
-          <dd class="mono" style="font-size: 12px">{{ current.fingerprint ?? '—' }}</dd>
+          <dd class="mono" style="font-size: 12px">{{ current.fingerprint ?? '—' }} <button v-if="current.fingerprint" class="ghost sm icon-only kv-filter" :title="`Show only entries with this fingerprint`" @click="applyFilter('fingerprint', current.fingerprint)"><AppIcon name="funnel" :size="12" /></button></dd>
           <dt>Entry ID</dt>
           <dd class="mono faint" style="font-size: 11.5px">{{ current.id }}</dd>
         </dl>
@@ -93,14 +93,34 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { RouterLink } from 'vue-router'
-import { api, type LogContext, type LogEntry } from '../api/client'
+import { RouterLink, useRouter } from 'vue-router'
+import { api, type LogContext, type LogEntry, type LogQuery } from '../api/client'
 import { formatDateTime } from '../utils/format'
 import AppIcon from './AppIcon.vue'
 import SeverityBadge from './SeverityBadge.vue'
 
-const props = defineProps<{ entry: LogEntry | null }>()
-const emit = defineEmits<{ (e: 'close'): void }>()
+const props = defineProps<{
+  entry: LogEntry | null
+  /** Set by the Explorer: filter in place instead of navigating there. */
+  inExplorer?: boolean
+}>()
+const emit = defineEmits<{
+  (e: 'close'): void
+  (e: 'filter', field: FilterField, value: string): void
+}>()
+const router = useRouter()
+
+type FilterField = 'service' | 'source' | 'import_id' | 'fingerprint'
+
+function applyFilter(field: FilterField, value: string) {
+  if (props.inExplorer) {
+    emit('filter', field, value)
+  } else {
+    const query: LogQuery = { [field]: value }
+    void router.push({ path: '/logs', query: query as Record<string, string> })
+  }
+  emit('close')
+}
 
 const copied = ref(false)
 /** Entry shown in the drawer: the selected one, or a surrounding line. */
@@ -188,6 +208,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 </script>
 
 <style scoped>
+.kv-filter { padding: 1px 4px; margin-left: 4px; vertical-align: -2px; opacity: 0.55; }
+.kv-filter:hover { opacity: 1; }
 .ctx-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 .ctx-head button { margin-left: auto; }
 .ctx-sub { font-size: 11.5px; font-weight: 400; }

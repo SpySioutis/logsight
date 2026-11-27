@@ -290,6 +290,9 @@ with a helpful message, never 500. Pydantic `Literal` mismatches → 422.
   `LogDetails` drawer links trace/request ids to `/traces/:id` and shows
   "surrounding lines" (`/logs/{id}/context`); clicking one navigates
   inside the drawer (`current` ref), so every view using it gets this;
+  funnel buttons filter by service/source/import/fingerprint (in-place via
+  `@filter` when the Explorer passes `in-explorer`, otherwise they navigate
+  to `/logs?<field>=…`);
   `TimeChart` is a dependency-free smooth SVG area chart with hover
   crosshair; `TrendSpark` is a dependency-free SVG area sparkline.
 - **Tests**: 17 vitest tests (`client.test.ts`, `severity.test.ts`,

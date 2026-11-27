@@ -86,7 +86,7 @@
     <EmptyState v-else title="No entries match" icon="search" hint="Adjust the search text, severity toggles or date range." />
   </div>
 
-  <LogDetails :entry="selected" @close="selected = null" />
+  <LogDetails :entry="selected" in-explorer @close="selected = null" @filter="onDrawerFilter" />
 </template>
 
 <script setup lang="ts">
@@ -286,6 +286,11 @@ function resetQuery() {
     date_to: undefined,
     page: 1,
   })
+}
+
+/** "Filter by this value" from the entry drawer: replace that one filter. */
+function onDrawerFilter(field: 'service' | 'source' | 'import_id' | 'fingerprint', value: string) {
+  query[field] = value
 }
 
 function syncUrl() {
