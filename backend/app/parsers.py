@@ -44,7 +44,8 @@ class ParsedEntry:
 
 _TS_PATTERNS: list[tuple[re.Pattern[str], str | None]] = [
     # ISO-8601 with optional timezone: 2024-05-01T12:34:56.789Z / +02:00
-    (re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d:?\d{2}:?(?::?\d{2})?)?"), None),
+    # (offset as +02:00, +0200 or +02; previously the offset was dropped).
+    (re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}(?::?\d{2})?\b)?"), None),
     # 2024-05-01 12:34:56,789
     (re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:[.,]\d+)?"), "%Y-%m-%d %H:%M:%S"),
     # Syslog: May  1 12:34:56
@@ -62,6 +63,19 @@ def _parse_iso(text: str) -> datetime | None:
         return None
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _most_recent_year(parsed: datetime) -> datetime:
+    """Syslog stamps carry no year: pick the latest one not in the future."""
+    now = datetime.now(timezone.utc)
+    for year in range(now.year, now.year - 8, -1):
+        try:
+            candidate = parsed.replace(year=year)
+        except ValueError:
+            continue  # Feb 29 in a non-leap year
+        if candidate.replace(tzinfo=timezone.utc) <= now:
+            return candidate
     return parsed
 
 
@@ -91,21 +105,19 @@ def parse_timestamp(text: str) -> datetime | None:
             except (OverflowError, OSError, ValueError):
                 continue
         else:
+            yearless = kind.startswith("%b")
             for fmt in (kind, kind + ",%f", kind + ".%f"):
                 try:
-                    parsed = datetime.strptime(raw, fmt)
+                    if yearless:
+                        # Parse with an explicit leap year so "Feb 29" is
+                        # valid (strptime's default 1900 is not a leap year).
+                        parsed = datetime.strptime(f"2000 {raw}", f"%Y {fmt}")
+                    else:
+                        parsed = datetime.strptime(raw, fmt)
                 except ValueError:
                     continue
-                if kind.startswith("%b"):
-                    # Syslog stamps carry no year: assume the most recent
-                    # plausible one instead of strptime's default 1900.
-                    now = datetime.now(timezone.utc)
-                    try:
-                        parsed = parsed.replace(year=now.year)
-                        if parsed.replace(tzinfo=timezone.utc) > now:
-                            parsed = parsed.replace(year=now.year - 1)
-                    except ValueError:
-                        pass  # e.g. Feb 29 on a non-leap year; keep parsed year
+                if yearless:
+                    parsed = _most_recent_year(parsed)
                 return parsed.replace(tzinfo=timezone.utc)
     return None
 

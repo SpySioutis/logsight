@@ -160,6 +160,9 @@ logsight/
   - `parse_plain_line()`: never raises; tries RFC 5424 syslog first, then
     regex level + timestamp + `k=v` extraction (service/app, source/logger/
     host/…, trace/request/correlation/span ids).
+  - `parse_timestamp()`: ISO 8601 keeps its UTC offset (`Z`, `+02:00`,
+    `+0200`, `+02`; naive → UTC); year-less syslog stamps get the latest
+    year that is not in the future (`Feb 29` handled via a leap year).
   - `parse_syslog_line()`: `<PRI>1 TS HOST APP PROC MSGID [SD] MSG`;
     severity from `PRI % 8`; trace/request ids from structured-data params.
     Returns `None` when the line is not syslog (caller falls back).

@@ -167,3 +167,31 @@ def test_continuation_detection_and_join():
     append_continuation(entry, "\tat com.example.A.a(A.java:1)")
     assert "at com.example" in entry.message
     assert entry.fingerprint != before
+
+
+def test_iso_offsets_are_kept():
+    from datetime import timedelta
+
+    from app.parsers import parse_timestamp
+
+    # The offset used to be dropped (stored as UTC, hours off) or, for
+    # "+0200", the whole timestamp was lost.
+    for text in ("2024-05-01T12:00:00+02:00 INFO x", "2024-05-01T12:00:00+0200 INFO x", "2024-05-01T12:00:00+02 x"):
+        ts = parse_timestamp(text)
+        assert ts is not None and ts.utcoffset() == timedelta(hours=2), text
+    ts = parse_timestamp("2024-05-01T12:00:00.123-05:00 boom")
+    assert ts is not None and ts.utcoffset() == timedelta(hours=-5)
+    assert parse_timestamp("2024-05-01T12:00:00Z x").utcoffset() == timedelta(0)
+
+
+def test_yearless_syslog_dates():
+    from datetime import datetime, timezone
+
+    from app.parsers import parse_timestamp
+
+    leap = parse_timestamp("Feb 29 10:00:00 host app: x")
+    assert leap is not None and leap.month == 2 and leap.day == 29
+    assert leap <= datetime.now(timezone.utc)
+    recent = parse_timestamp("Dec 31 23:59:59 host app: x")
+    assert recent is not None and recent <= datetime.now(timezone.utc)
+    assert recent.year >= datetime.now(timezone.utc).year - 1
