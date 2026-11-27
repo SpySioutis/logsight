@@ -21,9 +21,11 @@ _SYSLOG_TS = re.compile(
 )
 _TIME = re.compile(r"\b\d{2}:\d{2}:\d{2}(?:[.,]\d+)?\b")
 _UUID = re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b")
-_HEX = re.compile(r"\b0x[0-9a-fA-F]+\b|\b[0-9a-fA-F]{7,}\b")
+# Hex rules need at least one a-f letter: pure-digit tokens must become <n>
+# regardless of length, otherwise "line 120" and "line 10020" split groups.
+_HEX = re.compile(r"\b0x[0-9a-fA-F]+\b|\b(?=[0-9]*[a-fA-F])[0-9a-fA-F]{7,}\b")
 _IP = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b")
-_HEXLIKE = re.compile(r"\b\d[0-9a-fA-F]{3,}\b")
+_HEXLIKE = re.compile(r"\b(?=\d[0-9]*[a-fA-F])\d[0-9a-fA-F]{3,}\b")
 _NUMBER = re.compile(r"\b\d+(?:\.\d+)+\b|\b\d+\b|(?<!\w)\d+(?=[a-zA-Z%])")
 _QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"")
 _WS = re.compile(r"\s+")

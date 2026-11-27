@@ -42,3 +42,14 @@ def test_timestamps_do_not_split_groups():
 
 def test_timestamp_rules_keep_messages_distinct():
     assert fingerprint("2024-05-01T10:00:00Z ERROR boom") != fingerprint("2024-05-01T10:00:00Z ERROR bang")
+
+
+def test_number_length_does_not_split_groups():
+    # Integers with 4+ digits used to become <hex>, shorter ones <n>.
+    assert fingerprint("line 120 connection refused") == fingerprint("line 10020 connection refused")
+    assert fingerprint("retry 3 of 5") == fingerprint("retry 3 of 1234567")
+
+
+def test_hex_ids_still_masked():
+    assert fingerprint("job 3fa9c2e1 failed") == fingerprint("job 9bc0d1e2 failed")
+    assert normalize_message("ptr 0xdeadbeef commit a1b2c3d") == "ptr <hex> commit <hex>"
