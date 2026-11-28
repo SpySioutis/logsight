@@ -60,12 +60,33 @@ class ParsedQuery:
 
     @property
     def websearch_text(self) -> str:
-        """Free-text part rebuilt in websearch_to_tsquery syntax."""
-        parts = list(self.must_terms)
-        parts += [f'"{p}"' for p in self.must_phrases]
-        parts += [f"-{t}" for t in self.exclude_terms]
-        parts += [f'-"{p}"' for p in self.exclude_phrases]
-        return " ".join(parts)[:500]
+        """Free-text part rebuilt in websearch_to_tsquery syntax.
+
+        Terms get the same character split as the indexed text; a term that
+        splits into several words becomes a phrase ("10.0.0.5" ->
+        "10 0 0 5") so it still matches only that exact sequence.
+        """
+        parts = [_fts_term(t) for t in self.must_terms]
+        parts += [f'"{_fts_split(p)}"' for p in self.must_phrases]
+        parts += [f"-{_fts_term(t)}" for t in self.exclude_terms]
+        parts += [f'-"{_fts_split(p)}"' for p in self.exclude_phrases]
+        return " ".join(p for p in parts if p.strip('-" '))[:500]
+
+
+# Characters the search index treats as word separators (see
+# migrations/0008_search_split_tokens.sql): PostgreSQL's parser would
+# otherwise keep paths, e-mails, hosts and IPs as single tokens.
+FTS_SPLIT_CHARS = "/.@:"
+_FTS_SPLIT = str.maketrans({c: " " for c in FTS_SPLIT_CHARS})
+
+
+def _fts_split(text: str) -> str:
+    return " ".join(text.translate(_FTS_SPLIT).split())
+
+
+def _fts_term(term: str) -> str:
+    split = _fts_split(term)
+    return f'"{split}"' if " " in split else split
 
 
 def _strip_quotes(value: str) -> tuple[str, bool]:
@@ -99,21 +120,31 @@ def parse_search_query(raw: str | None) -> ParsedQuery:
     return parsed
 
 
+def contains_ci(column, value: str):
+    """Case-insensitive substring match treating ``value`` literally.
+
+    ``%`` and ``_`` in user input are escaped (otherwise ``web_1`` also
+    matched ``web-1`` and ``%`` matched everything). Kept as one bound
+    ``ILIKE`` pattern so PostgreSQL can still use the trigram index.
+    """
+    escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return column.ilike(f"%{escaped}%", escape="\\")
+
+
 def _text_columns_contain(value: str):
-    like = f"%{value}%"
     return or_(
-        LogEntry.message.ilike(like),
-        LogEntry.source.ilike(like),
-        LogEntry.service.ilike(like),
+        contains_ci(LogEntry.message, value),
+        contains_ci(LogEntry.source, value),
+        contains_ci(LogEntry.service, value),
     )
 
 
 def apply_field_filters(query: Query, parsed: ParsedQuery) -> Query:
     for name, value in parsed.field_filters.items():
         if name == "service":
-            query = query.filter(LogEntry.service.ilike(f"%{value}%"))
+            query = query.filter(contains_ci(LogEntry.service, value))
         elif name == "source":
-            query = query.filter(LogEntry.source.ilike(f"%{value}%"))
+            query = query.filter(contains_ci(LogEntry.source, value))
         elif name == "severity":
             query = query.filter(LogEntry.severity == normalize_severity(value))
         elif name == "trace_id":
@@ -123,9 +154,9 @@ def apply_field_filters(query: Query, parsed: ParsedQuery) -> Query:
     for name, values in parsed.exclude_field_filters.items():
         for value in values:
             if name == "service":
-                query = query.filter(not_(LogEntry.service.ilike(f"%{value}%")))
+                query = query.filter(not_(contains_ci(LogEntry.service, value)))
             elif name == "source":
-                query = query.filter(not_(LogEntry.source.ilike(f"%{value}%")))
+                query = query.filter(not_(contains_ci(LogEntry.source, value)))
             elif name == "severity":
                 query = query.filter(LogEntry.severity != normalize_severity(value))
             elif name == "trace_id":

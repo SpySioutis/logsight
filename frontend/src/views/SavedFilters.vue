@@ -87,6 +87,7 @@ function describe(params: LogQuery): string {
   if (params.service) parts.push(`service~${params.service}`)
   if (params.trace_id) parts.push(`trace=${params.trace_id}`)
   if (params.request_id) parts.push(`request=${params.request_id}`)
+  if (params.fingerprint) parts.push(`error group=${params.fingerprint.slice(0, 8)}`)
   if (params.date_from) parts.push(`from ${params.date_from}`)
   if (params.date_to) parts.push(`to ${params.date_to}`)
   return parts.join(' · ') || 'no criteria'

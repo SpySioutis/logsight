@@ -23,4 +23,4 @@ ENV PATH="/app/.venv/bin:$PATH"
 EXPOSE 8000
 
 # Apply SQL migrations, then start the API.
-CMD ["sh", "-c", "python -m app.migrate && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+CMD ["sh", "-c", "python -m app.migrate --recover && uvicorn app.main:app --host 0.0.0.0 --port 8000"]

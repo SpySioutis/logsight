@@ -11,6 +11,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import IO, Any, Iterator
 
 from app.grouping import fingerprint
@@ -44,9 +45,14 @@ class ParsedEntry:
 
 _TS_PATTERNS: list[tuple[re.Pattern[str], str | None]] = [
     # ISO-8601 with optional timezone: 2024-05-01T12:34:56.789Z / +02:00
-    (re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d:?\d{2}:?(?::?\d{2})?)?"), None),
+    # (offset as +02:00, +0200 or +02; previously the offset was dropped).
+    (re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}(?::?\d{2})?\b)?"), None),
     # 2024-05-01 12:34:56,789
     (re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:[.,]\d+)?"), "%Y-%m-%d %H:%M:%S"),
+    # Common/combined log format (nginx/Apache access): [01/May/2024:12:34:56 +0200]
+    (re.compile(r"\d{2}/[A-Z][a-z]{2}/\d{4}:\d{2}:\d{2}:\d{2} [+-]\d{4}"), "%d/%b/%Y:%H:%M:%S %z"),
+    # nginx error log / Go log package: 2024/05/01 12:34:56
+    (re.compile(r"\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}(?:[.,]\d+)?"), "%Y/%m/%d %H:%M:%S"),
     # Syslog: May  1 12:34:56
     (re.compile(r"[A-Z][a-z]{2}\s+\d{1,2} \d{2}:\d{2}:\d{2}"), "%b %d %H:%M:%S"),
     # Epoch seconds / millis at line start.
@@ -62,6 +68,19 @@ def _parse_iso(text: str) -> datetime | None:
         return None
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _most_recent_year(parsed: datetime) -> datetime:
+    """Syslog stamps carry no year: pick the latest one not in the future."""
+    now = datetime.now(timezone.utc)
+    for year in range(now.year, now.year - 8, -1):
+        try:
+            candidate = parsed.replace(year=year)
+        except ValueError:
+            continue  # Feb 29 in a non-leap year
+        if candidate.replace(tzinfo=timezone.utc) <= now:
+            return candidate
     return parsed
 
 
@@ -91,22 +110,20 @@ def parse_timestamp(text: str) -> datetime | None:
             except (OverflowError, OSError, ValueError):
                 continue
         else:
+            yearless = kind.startswith("%b")
             for fmt in (kind, kind + ",%f", kind + ".%f"):
                 try:
-                    parsed = datetime.strptime(raw, fmt)
+                    if yearless:
+                        # Parse with an explicit leap year so "Feb 29" is
+                        # valid (strptime's default 1900 is not a leap year).
+                        parsed = datetime.strptime(f"2000 {raw}", f"%Y {fmt}")
+                    else:
+                        parsed = datetime.strptime(raw, fmt)
                 except ValueError:
                     continue
-                if kind.startswith("%b"):
-                    # Syslog stamps carry no year: assume the most recent
-                    # plausible one instead of strptime's default 1900.
-                    now = datetime.now(timezone.utc)
-                    try:
-                        parsed = parsed.replace(year=now.year)
-                        if parsed.replace(tzinfo=timezone.utc) > now:
-                            parsed = parsed.replace(year=now.year - 1)
-                    except ValueError:
-                        pass  # e.g. Feb 29 on a non-leap year; keep parsed year
-                return parsed.replace(tzinfo=timezone.utc)
+                if yearless:
+                    parsed = _most_recent_year(parsed)
+                return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
     return None
 
 
@@ -123,6 +140,19 @@ _KV_RE = re.compile(
 )
 
 
+# Common/combined access-log request + status: "GET /path HTTP/1.1" 503
+_ACCESS_RE = re.compile(
+    r'"(?P<method>GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|CONNECT|TRACE) (?P<path>\S+) HTTP/[\d.]+" (?P<status>[1-5]\d{2})\b'
+)
+
+
+# Level inside an access-log prefix: uppercase, not glued to . - @ / or
+# word characters (so no hostnames, e-mails, paths or user names).
+_ACCESS_LEVEL_RE = re.compile(
+    r"(?<![\w.@/-])(?P<level>TRACE|DEBUG|INFO|NOTICE|WARN(?:ING)?|ERROR|ERR|FATAL|CRITICAL|CRIT|ALERT|EMERG(?:ENCY)?)(?![\w.@/-])"
+)
+
+
 def parse_plain_line(line: str) -> ParsedEntry:
     """Parse one plain-text log line; never raises on bad input."""
     syslog_entry = parse_syslog_line(line)
@@ -130,8 +160,29 @@ def parse_plain_line(line: str) -> ParsedEntry:
         return syslog_entry
     raw = line if len(line) <= MAX_LINE_LENGTH else line[:MAX_LINE_LENGTH] + "…"
     text = line.strip()
-    level_match = _LEVEL_RE.search(text)
+    access = _ACCESS_RE.search(text)
+    # In access logs, only look for a level *before* the quoted request:
+    # words in the path, referrer or user agent ("/api/error/report",
+    # "/debug") are not severities.
+    if access is None:
+        level_match = _LEVEL_RE.search(text)
+    else:
+        # Before the request sit host/vhost, ident and user fields: only an
+        # uppercase standalone word counts there ("error.example.com" or a
+        # user named "alert" must not become a severity).
+        level_match = _ACCESS_LEVEL_RE.search(text, 0, access.start())
     severity = normalize_severity(level_match.group("level")) if level_match else "UNKNOWN"
+    attributes: dict[str, Any] = {}
+    if access is not None:
+        status = int(access.group("status"))
+        attributes = {
+            "http_method": access.group("method"),
+            "http_path": access.group("path")[:2048],
+            "http_status": status,
+        }
+        if level_match is None:
+            # Access logs carry no level: derive it from the status code.
+            severity = "ERROR" if status >= 500 else "WARNING" if status >= 400 else "INFO"
     timestamp = parse_timestamp(text)
     service: str | None = None
     source: str | None = None
@@ -156,7 +207,7 @@ def parse_plain_line(line: str) -> ParsedEntry:
         source=source,
         message=message,
         raw=raw,
-        attributes={},
+        attributes=attributes,
         trace_id=trace_id,
         request_id=request_id,
     )
@@ -299,6 +350,11 @@ def _coerce_timestamp(value: Any) -> datetime | None:
     if isinstance(value, datetime):
         return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
     if isinstance(value, (int, float)):
+        if isinstance(value, int) or float(value).is_integer():
+            # JSON numbers get the same compact-date check as strings.
+            compact = _compact_date(str(int(value)))
+            if compact is not None:
+                return compact
         number = float(value)
         if number > 1e14:  # microseconds
             number /= 1e6
@@ -309,10 +365,38 @@ def _coerce_timestamp(value: Any) -> datetime | None:
         except (OverflowError, OSError, ValueError):
             return None
     if isinstance(value, str):
-        parsed = _parse_iso(value)
+        stripped = value.strip()
+        if _NUMERIC.fullmatch(stripped):
+            # Compact dates first ("20240501123456"), then epochs: CSV
+            # delivers every value as text, so "1714557600" is an epoch.
+            return _compact_date(stripped) or _coerce_timestamp(float(stripped))
+        parsed = _parse_iso(stripped)
         if parsed is not None:
             return parsed
-        return parse_timestamp(value)
+        parsed = parse_timestamp(stripped)
+        if parsed is not None:
+            return parsed
+        try:  # RFC 2822 / HTTP dates: "Wed, 01 May 2024 12:00:00 GMT"
+            parsed = parsedate_to_datetime(stripped)
+        except (TypeError, ValueError, IndexError):
+            return None
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return None
+
+
+_NUMERIC = re.compile(r"\d{9,16}(?:\.\d+)?")
+_COMPACT_FORMATS = {14: ("%Y%m%d%H%M%S",), 12: ("%Y%m%d%H%M",)}
+
+
+def _compact_date(digits: str) -> datetime | None:
+    """YYYYMMDDHHMM[SS] written as a number; None if it is not one."""
+    for fmt in _COMPACT_FORMATS.get(len(digits), ()):
+        try:
+            parsed = datetime.strptime(digits, fmt)
+        except ValueError:
+            continue
+        if 1970 <= parsed.year <= 2100:  # else: more likely an epoch
+            return parsed.replace(tzinfo=timezone.utc)
     return None
 
 

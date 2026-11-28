@@ -97,6 +97,7 @@ _COPY_COLUMNS = (
     "fingerprint",
     "trace_id",
     "request_id",
+    "seq",
     "created_at",
 )
 
@@ -130,6 +131,7 @@ def _copy_flush(db: Session, import_id: str, batch: list[dict]) -> None:
                 row["fingerprint"],
                 row["trace_id"],
                 row["request_id"],
+                row["seq"],
                 now,
             ]
         )
@@ -148,10 +150,26 @@ def _copy_flush(db: Session, import_id: str, batch: list[dict]) -> None:
     db.commit()
 
 
-def _row(entry: parsers.ParsedEntry) -> dict:
+def _to_utc(value: datetime | None) -> datetime | None:
+    """Store instants as UTC (SQLite drops offsets; PG keeps the instant).
+
+    Near the ends of Python's range (e.g. .NET DateTime.MinValue written
+    as "0001-01-01T00:30:00+01:00") the conversion overflows: keep the
+    original value then — bad line content must never abort an import.
+    """
+    if value is None:
+        return None
+    try:
+        return value.astimezone(timezone.utc)
+    except (OverflowError, ValueError):
+        return value
+
+
+def _row(entry: parsers.ParsedEntry, seq: int) -> dict:
     return {
+        "seq": seq,
         "id": str(uuid.uuid4()),
-        "timestamp": entry.timestamp,
+        "timestamp": _to_utc(entry.timestamp),
         "severity": entry.severity,
         "service": entry.service,
         "source": entry.source,
@@ -283,8 +301,8 @@ class _Parser:
             self._record.error_count = self.errors
 
     def add(self, entry: parsers.ParsedEntry) -> None:
-        self.batch.append(_row(entry))
         self.parsed += 1
+        self.batch.append(_row(entry, self.parsed))
         if len(self.batch) >= CHUNK_ROWS:
             self._sync_progress()
             _flush(self._db, self._import_id, self.batch)
@@ -421,6 +439,23 @@ def _parse_zip(parser: _Parser, tmp_path: str, counter: _Counter) -> None:
                 _parse_file_object(parser, text_wrapper, fmt, counter, info.filename)
 
 
+def _mark_failed(db: Session, record: Import, message: str) -> None:
+    """Mark an import failed and drop any rows already flushed for it.
+
+    Batches are committed as they go, so a failure mid-file would otherwise
+    leave a partial import behind (counted by dashboards, and re-inserted on
+    retry because duplicate detection only matches completed imports).
+    """
+    db.rollback()
+    db.query(LogEntry).filter(LogEntry.import_id == record.id).delete(synchronize_session=False)
+    record.status = "failed"
+    record.error_message = message[:2000]
+    record.parsed_count = 0
+    record.finished_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(record)
+
+
 def import_upload(db: Session, upload: UploadFile) -> tuple[Import, bool]:
     filename = upload.filename or "upload.log"
     fmt = detect_format(filename)
@@ -429,9 +464,7 @@ def import_upload(db: Session, upload: UploadFile) -> tuple[Import, bool]:
             status_code=400,
             detail=f"Unsupported file type. Use {_EXTENSIONS_HELP}.",
         )
-    is_gz = filename.lower().endswith(".gz") or (
-        fmt != "zip" and filename.lower().endswith(".gz")
-    )
+    is_gz = fmt != "zip" and filename.lower().endswith(".gz")
 
     # Stream to disk with size cap + running hash (constant memory).
     digest = hashlib.sha256()
@@ -504,13 +537,16 @@ def import_upload(db: Session, upload: UploadFile) -> tuple[Import, bool]:
                     _parse_file_object(parser, fh, fmt, counter)
             parser.flush()
         except ValueError as exc:
-            db.rollback()
-            record.status = "failed"
-            record.error_message = str(exc)
-            record.finished_at = datetime.now(timezone.utc)
-            db.commit()
-            db.refresh(record)
+            _mark_failed(db, record, str(exc))
             return record, False
+        except HTTPException as exc:
+            # e.g. 413 from the decompressed-size cap hit mid-parse: never
+            # leave the record stuck in "processing" with partial rows.
+            _mark_failed(db, record, str(exc.detail))
+            raise
+        except Exception:
+            _mark_failed(db, record, "Import aborted by an internal error.")
+            raise
 
         record.status = "completed"
         record.total_lines = parser.total_lines
@@ -526,3 +562,16 @@ def import_upload(db: Session, upload: UploadFile) -> tuple[Import, bool]:
                 os.unlink(path)
             except OSError:
                 pass
+
+
+def recover_interrupted_imports(db: Session) -> int:
+    """Fail imports left in ``processing`` by a crash or restart.
+
+    Imports run synchronously inside the upload request of the single API
+    process, so at boot (before uvicorn starts) nothing can legitimately
+    still be processing. Partial rows of those imports are removed.
+    """
+    stuck = db.query(Import).filter(Import.status == "processing").all()
+    for record in stuck:
+        _mark_failed(db, record, "Import was interrupted (server restarted mid-import). Upload the file again.")
+    return len(stuck)

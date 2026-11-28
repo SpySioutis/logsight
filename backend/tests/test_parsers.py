@@ -167,3 +167,99 @@ def test_continuation_detection_and_join():
     append_continuation(entry, "\tat com.example.A.a(A.java:1)")
     assert "at com.example" in entry.message
     assert entry.fingerprint != before
+
+
+def test_iso_offsets_are_kept():
+    from datetime import timedelta
+
+    from app.parsers import parse_timestamp
+
+    # The offset used to be dropped (stored as UTC, hours off) or, for
+    # "+0200", the whole timestamp was lost.
+    for text in ("2024-05-01T12:00:00+02:00 INFO x", "2024-05-01T12:00:00+0200 INFO x", "2024-05-01T12:00:00+02 x"):
+        ts = parse_timestamp(text)
+        assert ts is not None and ts.utcoffset() == timedelta(hours=2), text
+    ts = parse_timestamp("2024-05-01T12:00:00.123-05:00 boom")
+    assert ts is not None and ts.utcoffset() == timedelta(hours=-5)
+    assert parse_timestamp("2024-05-01T12:00:00Z x").utcoffset() == timedelta(0)
+
+
+def test_yearless_syslog_dates():
+    from datetime import datetime, timezone
+
+    from app.parsers import parse_timestamp
+
+    leap = parse_timestamp("Feb 29 10:00:00 host app: x")
+    assert leap is not None and leap.month == 2 and leap.day == 29
+    assert leap <= datetime.now(timezone.utc)
+    recent = parse_timestamp("Dec 31 23:59:59 host app: x")
+    assert recent is not None and recent <= datetime.now(timezone.utc)
+    assert recent.year >= datetime.now(timezone.utc).year - 1
+
+
+def test_access_log_lines():
+    from app.parsers import parse_plain_line
+
+    e = parse_plain_line('127.0.0.1 - - [01/May/2024:12:00:00 +0200] "GET /api?x=1 HTTP/1.1" 503 512 "-" "curl/8"')
+    assert e.timestamp is not None and e.timestamp.isoformat() == "2024-05-01T12:00:00+02:00"
+    assert e.severity == "ERROR"
+    assert e.attributes == {"http_method": "GET", "http_path": "/api?x=1", "http_status": 503}
+    assert parse_plain_line('1.2.3.4 - - [01/May/2024:12:00:01 +0000] "POST /login HTTP/2.0" 401 0').severity == "WARNING"
+    assert parse_plain_line('1.2.3.4 - - [01/May/2024:12:00:02 +0000] "GET / HTTP/1.1" 200 10').severity == "INFO"
+    # An explicit level wins over the status code.
+    assert parse_plain_line('INFO "GET /health HTTP/1.1" 503').severity == "INFO"
+
+
+def test_slash_dated_and_epoch_string_timestamps():
+    import json
+
+    from app.parsers import parse_json_line, parse_plain_line
+
+    assert parse_plain_line("2024/05/01 12:00:00 [error] 1#0: connect() failed").timestamp is not None
+    for value, expected in (
+        ("1714557600", "2024-05-01T10:00:00+00:00"),
+        ("1714557600123", "2024-05-01T10:00:00.123000+00:00"),
+        ("Wed, 01 May 2024 12:00:00 GMT", "2024-05-01T12:00:00+00:00"),
+    ):
+        entry = parse_json_line(json.dumps({"timestamp": value, "msg": "x"}), 1)
+        assert entry is not None and entry.timestamp is not None
+        assert entry.timestamp.isoformat() == expected, value
+
+
+def test_access_log_level_only_outside_request():
+    from app.parsers import parse_plain_line
+
+    line = '1.2.3.4 - - [01/May/2024:12:00:00 +0000] "GET {path} HTTP/1.1" {status} 1 "https://x/WARN" "ua"'
+    assert parse_plain_line(line.format(path="/api/error/report", status=200)).severity == "INFO"
+    assert parse_plain_line(line.format(path="/debug", status=503)).severity == "ERROR"
+    assert parse_plain_line(line.format(path="/?level=info", status=500)).severity == "ERROR"
+    assert parse_plain_line(line.format(path="/", status=404)).severity == "WARNING"
+
+
+def test_compact_numeric_dates_are_not_epochs():
+    import json
+
+    from app.parsers import parse_json_line
+
+    def ts(value):
+        return parse_json_line(json.dumps({"timestamp": value, "msg": "x"}), 1).timestamp
+
+    assert ts("20240501123456").isoformat() == "2024-05-01T12:34:56+00:00"
+    assert ts("202405011234").isoformat() == "2024-05-01T12:34:00+00:00"
+    assert ts("1714557600").year == 2024
+    assert ts("946684800").year == 2000  # 9-digit epochs (before Sept 2001) still work
+    assert ts(20240501123456).isoformat() == "2024-05-01T12:34:56+00:00"  # JSON number
+    assert ts(202405011234).isoformat() == "2024-05-01T12:34:00+00:00"
+    assert ts(1714557600123).year == 2024  # 13-digit ms epoch is not a compact date
+
+
+def test_access_log_prefix_words_are_not_levels():
+    from app.parsers import parse_plain_line
+
+    req = '"GET / HTTP/1.1" 200 1'
+    assert parse_plain_line(f"error.example.com 1.2.3.4 - - [01/May/2024:12:00:00 +0000] {req}").severity == "INFO"
+    assert parse_plain_line(f"1.2.3.4 - alert [01/May/2024:12:00:00 +0000] {req}").severity == "INFO"
+    assert parse_plain_line(f"1.2.3.4 - debug-user [01/May/2024:12:00:00 +0000] {req}").severity == "INFO"
+    # Explicit uppercase levels before the request still win.
+    assert parse_plain_line(f"[WARN] 1.2.3.4 - - [01/May/2024:12:00:00 +0000] {req}").severity == "WARN"
+    assert parse_plain_line(f'INFO "GET /health HTTP/1.1" 503').severity == "INFO"

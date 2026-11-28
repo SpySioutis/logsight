@@ -23,19 +23,23 @@
         <div class="dz-icon"><AppIcon name="imports" :size="25" /></div>
         <template v-if="uploadPct < 100">
           <div class="dz-title">Uploading {{ uploadName }}… {{ uploadPct }}%</div>
+          <div v-if="queueTotal > 1" class="dz-sub">file {{ queueIndex }} of {{ queueTotal }}</div>
           <div class="progress-track" style="max-width: 420px; margin: 14px auto 0">
             <div class="progress-fill" :style="{ width: `${uploadPct}%` }"></div>
           </div>
         </template>
         <template v-else-if="ownPct !== null">
           <div class="dz-title">Parsing {{ uploadName }}… {{ ownPct }}%</div>
-          <div class="dz-sub">{{ formatNumber(ownParsed) }} of {{ formatNumber(ownTotal) }} lines</div>
+          <div class="dz-sub">
+            {{ formatNumber(ownParsed) }} of {{ formatNumber(ownTotal) }} lines<template v-if="queueTotal > 1"> · file {{ queueIndex }} of {{ queueTotal }}</template>
+          </div>
           <div class="progress-track" style="max-width: 420px; margin: 14px auto 0">
             <div class="progress-fill" :style="{ width: `${ownPct}%` }"></div>
           </div>
         </template>
         <template v-else>
           <div class="dz-title">Upload received — starting parse…</div>
+          <div v-if="queueTotal > 1" class="dz-sub">file {{ queueIndex }} of {{ queueTotal }}</div>
           <div class="progress-track" style="max-width: 420px; margin: 14px auto 0">
             <div class="progress-fill indeterminate"></div>
           </div>
@@ -43,12 +47,13 @@
       </template>
       <template v-else>
         <div class="dz-icon"><AppIcon name="imports" :size="25" /></div>
-        <div class="dz-title">Drop a file here or click to browse</div>
+        <div class="dz-title">Drop files here or click to browse</div>
         <div class="dz-sub">Parsed line-by-line on the server · exact duplicates detected by content hash · limit {{ maxUploadMb }} MB</div>
         <div class="format-pills">
           <span class="chip chip-mono">.log</span>
           <span class="chip chip-mono">.txt</span>
           <span class="chip chip-mono">.jsonl</span>
+          <span class="chip chip-mono">.ndjson</span>
           <span class="chip chip-mono">.json</span>
           <span class="chip chip-mono">.csv</span>
           <span class="chip chip-mono">.gz</span>
@@ -56,7 +61,7 @@
         </div>
       </template>
     </div>
-    <input ref="fileInput" type="file" accept=".log,.txt,.jsonl,.ndjson,.json,.csv,.gz,.zip" hidden @change="onPicked" />
+    <input ref="fileInput" type="file" accept=".log,.txt,.jsonl,.ndjson,.json,.csv,.gz,.zip" multiple hidden @change="onPicked" />
     <p class="faint" style="font-size: 12px; margin: 12px 2px 0">
       Plain text (incl. syslog + stacktraces), JSON Lines, structured JSON and CSV. Gzip and zip bundles accepted.
     </p>
@@ -150,6 +155,8 @@ const uploadPct = ref(0)
 const uploadName = ref('')
 const dragging = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
+const queueIndex = ref(0)
+const queueTotal = ref(0)
 const maxUploadMb = import.meta.env.VITE_MAX_UPLOAD_MB ?? '1024'
 
 const totalParsed = computed(() => imports.value.reduce((sum, i) => sum + i.parsed_count, 0))
@@ -214,34 +221,65 @@ async function refresh(silent = false) {
   }
 }
 
-async function upload(file: File) {
-  uploading.value = true
+type Outcome = { ok: true; text: string } | { ok: false; text: string }
+
+async function uploadOne(file: File): Promise<Outcome> {
   uploadPct.value = 0
   uploadName.value = file.name
-  error.value = ''
-  notice.value = ''
   const form = new FormData()
   form.append('file', file)
-  ensurePolling()
   try {
     const res = await api.post('/imports/upload', form, {
       headers: { 'Content-Type': 'multipart/form-data' },
+      // The request stays open for the whole (synchronous) parse, which can
+      // take far longer than the default 120 s for large files.
+      timeout: 0,
       onUploadProgress: (e) => {
         if (e.total) uploadPct.value = Math.round((e.loaded / e.total) * 100)
       },
     })
     const record = res.data as ImportRecord
     if (record.duplicate) {
-      notice.value = `"${file.name}" is identical to a previous import and was skipped as a duplicate.`
-    } else {
-      notice.value = `Imported ${formatNumber(record.parsed_count)} entries from "${file.name}".`
+      return { ok: true, text: `"${file.name}" is identical to a previous import and was skipped as a duplicate.` }
     }
-    await refresh()
+    return { ok: true, text: `Imported ${formatNumber(record.parsed_count)} entries from "${file.name}".` }
   } catch (e: unknown) {
-    error.value = axiosMessage(e)
+    return { ok: false, text: `${file.name}: ${axiosMessage(e)}` }
+  }
+}
+
+/** Files waiting to be uploaded; drops during an upload are appended. */
+const pending: File[] = []
+
+/** Upload files one after another (imports are processed synchronously). */
+async function uploadAll(files: File[]) {
+  if (!files.length) return
+  pending.push(...files)
+  queueTotal.value += files.length
+  if (uploading.value) return // the running loop picks them up
+  uploading.value = true
+  error.value = ''
+  notice.value = ''
+  queueIndex.value = 0
+  ensurePolling()
+  const done: string[] = []
+  const failed: string[] = []
+  try {
+    let file: File | undefined
+    while ((file = pending.shift())) {
+      queueIndex.value += 1
+      const outcome = await uploadOne(file)
+      ;(outcome.ok ? done : failed).push(outcome.text)
+      void refresh(true)
+    }
   } finally {
+    const total = queueTotal.value
     uploading.value = false
+    queueTotal.value = 0
+    await refresh(true)
     maybeStopPolling()
+    notice.value = total === 1 ? done.join('') : done.length ? `${done.length} of ${total} files imported. ${done.join(' ')}` : ''
+    error.value = failed.join(' · ')
   }
 }
 
@@ -253,14 +291,16 @@ function axiosMessage(e: unknown): string {
 }
 
 function onPicked(event: Event) {
-  const files = (event.target as HTMLInputElement).files
-  if (files?.length) upload(files[0])
+  const input = event.target as HTMLInputElement
+  const files = Array.from(input.files ?? [])
+  // Reset so picking the same file again still fires "change".
+  input.value = ''
+  void uploadAll(files)
 }
 
 function onDrop(event: DragEvent) {
   dragging.value = false
-  const file = event.dataTransfer?.files?.[0]
-  if (file) upload(file)
+  void uploadAll(Array.from(event.dataTransfer?.files ?? []))
 }
 
 function viewImport(id: string) {
@@ -269,8 +309,13 @@ function viewImport(id: string) {
 
 async function removeImport(imp: ImportRecord) {
   if (!window.confirm(`Delete import "${imp.filename}" and all its log entries?`)) return
-  await api.delete(`/imports/${imp.id}`)
-  await refresh()
+  error.value = ''
+  try {
+    await api.delete(`/imports/${imp.id}`)
+  } catch {
+    error.value = `Could not delete "${imp.filename}".`
+  }
+  await refresh(true)
 }
 
 onMounted(refresh)

@@ -83,6 +83,7 @@ def test_dashboard_and_errors_from_real_data(client):
     assert summary["total"] == 5
     assert summary["errors"] == 3  # 2 ERROR + 1 CRITICAL
     assert summary["critical"] == 1
+    assert summary["sources"] == 3  # web-1, web-2, worker-1 (NULL not counted)
 
     groups = client.get("/api/errors/groups").json()
     refused = [g for g in groups if "connection refused" in g["sample"]]
@@ -257,6 +258,8 @@ def test_trace_endpoints(client):
     assert len(listed) == 1
     assert listed[0]["trace_id"] == "t-9"
     assert listed[0]["count"] == 2
+    assert listed[0]["services"] == ["db", "web"]
+    assert listed[0]["severities"]
 
     detail = client.get("/api/traces/t-9").json()
     assert detail["count"] == 2
@@ -306,3 +309,296 @@ def test_error_group_lifecycle(client):
     client.put(f"/api/errors/groups/{fp}/state", json={"status": "muted"})
     top = client.get("/api/dashboard/top-errors").json()
     assert all(g["fingerprint"] != fp for g in top)
+
+
+def test_failed_zip_member_rolls_back_partial_rows(client, monkeypatch):
+    import zipfile
+
+    from app import import_service
+
+    # Tiny batches so the good member's rows are committed before the
+    # bad member fails; the failure must remove them again.
+    monkeypatch.setattr(import_service, "CHUNK_ROWS", 2)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("a.log", PLAIN_LOG.decode())
+        zf.writestr("b.json", "{not valid json")
+    resp = upload(client, "partial.zip", buf.getvalue())
+    assert resp.status_code == 422
+    assert client.get("/api/logs", params={"page_size": 1}).json()["total"] == 0
+    record = client.get("/api/imports").json()[0]
+    assert record["status"] == "failed"
+    assert record["parsed_count"] == 0
+
+
+def test_decompressed_cap_marks_import_failed(client, monkeypatch):
+    import gzip
+
+    from app import import_service
+
+    monkeypatch.setattr(import_service, "CHUNK_ROWS", 2)
+    # Raw upload fits, but the decompressed stream exceeds the cap.
+    monkeypatch.setattr(type(import_service.settings), "max_upload_bytes", property(lambda self: 600))
+    payload = PLAIN_LOG * 20
+    assert len(gzip.compress(payload)) < 600 < len(payload)
+    resp = upload(client, "big.log.gz", gzip.compress(payload))
+    assert resp.status_code == 413
+    record = client.get("/api/imports").json()[0]
+    assert record["status"] == "failed"
+    assert client.get("/api/logs", params={"page_size": 1}).json()["total"] == 0
+
+
+def test_recover_interrupted_imports(client, db_session):
+    from app.import_service import recover_interrupted_imports
+    from app.models import Import, LogEntry
+
+    stuck = Import(filename="x.log", file_size=1, file_hash="h" * 64, format="plaintext", status="processing")
+    db_session.add(stuck)
+    db_session.commit()
+    db_session.add(LogEntry(import_id=stuck.id, severity="INFO", message="partial"))
+    db_session.commit()
+    assert recover_interrupted_imports(db_session) == 1
+    record = client.get(f"/api/imports/{stuck.id}").json()
+    assert record["status"] == "failed"
+    assert "interrupted" in record["error_message"]
+    assert client.get("/api/logs").json()["total"] == 0
+
+
+def test_error_group_status_filter_applies_before_limit(client):
+    upload(client, "app.log", PLAIN_LOG)
+    groups = client.get("/api/errors/groups").json()
+    assert len(groups) == 2
+    # The smallest group, resolved, must be found even with limit=1.
+    smallest = min(groups, key=lambda g: g["count"])
+    client.put(f"/api/errors/groups/{smallest['fingerprint']}/state", json={"status": "resolved"})
+    resolved = client.get("/api/errors/groups", params={"status": "resolved", "limit": 1}).json()
+    assert [g["fingerprint"] for g in resolved] == [smallest["fingerprint"]]
+    open_groups = client.get("/api/errors/groups", params={"status": "open"}).json()
+    assert smallest["fingerprint"] not in [g["fingerprint"] for g in open_groups]
+    assert len(open_groups) == 1
+    # Sources are aggregated per group.
+    conn = next(g for g in groups if "connection refused" in g["sample"])
+    assert conn["sources"] == ["web-1", "web-2"]
+
+
+def test_export_csv_and_jsonl(client):
+    import csv as csv_mod
+    import json as json_mod
+
+    upload(client, "app.log", PLAIN_LOG)
+    resp = client.get("/api/logs/export", params={"severity": "ERROR", "sort": "timestamp", "direction": "asc"})
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("text/csv")
+    assert "attachment" in resp.headers["content-disposition"]
+    rows = list(csv_mod.reader(io.StringIO(resp.text)))
+    assert rows[0][:2] == ["timestamp", "severity"]
+    assert len(rows) == 3  # header + 2 errors
+    assert "10.0.0.5" in rows[1][4]
+
+    resp = client.get("/api/logs/export", params={"format": "jsonl", "q": "memory"})
+    lines = [json_mod.loads(line) for line in resp.text.splitlines()]
+    assert len(lines) == 1 and lines[0]["severity"] == "CRITICAL"
+    assert "attributes" in lines[0]
+
+    assert len(client.get("/api/logs/export", params={"limit": 2}).text.splitlines()) == 3
+    assert client.get("/api/logs/export", params={"format": "xml"}).status_code == 400
+    assert client.get("/api/logs/export", params={"severity": "nope"}).status_code == 400
+
+
+def test_export_neutralises_formula_cells(client):
+    upload(client, "evil.jsonl", b'{"level": "info", "msg": "=HYPERLINK(\\"http://x\\")"}\n')
+    text = client.get("/api/logs/export").text
+    assert "'=HYPERLINK" in text
+
+
+def test_histogram_follows_filters(client):
+    upload(client, "app.log", PLAIN_LOG)
+    hist = client.get("/api/logs/histogram").json()
+    assert hist["bucket"] == "minute"  # 4-minute span
+    assert sum(p["total"] for p in hist["points"]) == 5
+    assert sum(p["errors"] for p in hist["points"]) == 3
+    only_web2 = client.get("/api/logs/histogram", params={"source": "web-2"}).json()
+    assert sum(p["total"] for p in only_web2["points"]) == 1
+    assert client.get("/api/logs/histogram", params={"q": "zzz-no-match"}).json()["points"] == []
+
+
+def test_entry_context_uses_file_order(client):
+    # Identical timestamps: only the stored file order can recover sequence.
+    lines = b"".join(b"2024-05-01T10:00:00Z INFO line %d\n" % i for i in range(1, 8))
+    upload(client, "same-second.log", lines)
+    items = client.get("/api/logs", params={"page_size": 50}).json()["items"]
+    middle = next(i for i in items if i["message"].endswith("line 4"))
+    assert middle["seq"] == 4
+    ctx = client.get(f"/api/logs/{middle['id']}/context", params={"before": 2, "after": 10}).json()
+    assert [e["message"][-6:] for e in ctx["before"]] == ["line 2", "line 3"]
+    assert [e["message"][-6:] for e in ctx["after"]] == ["line 5", "line 6", "line 7"]
+    assert ctx["entry"]["id"] == middle["id"]
+    assert client.get("/api/logs/nope/context").status_code == 404
+
+
+def test_entry_context_fallback_without_seq(client, db_session):
+    from datetime import datetime, timedelta, timezone
+
+    from app.models import Import, LogEntry
+
+    rec = Import(filename="old.log", file_size=1, file_hash="o" * 64, format="plaintext", status="completed")
+    db_session.add(rec)
+    db_session.commit()
+    base = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    entries = [
+        LogEntry(import_id=rec.id, severity="INFO", message=f"m{i}", timestamp=base + timedelta(seconds=i))
+        for i in range(5)
+    ]
+    db_session.add_all(entries)
+    db_session.commit()
+    ctx = client.get(f"/api/logs/{entries[2].id}/context", params={"before": 1, "after": 1}).json()
+    assert [e["message"] for e in ctx["before"]] == ["m1"]
+    assert [e["message"] for e in ctx["after"]] == ["m3"]
+
+
+def test_histogram_fills_empty_buckets(client):
+    sparse = b"2024-05-01T10:00:00Z ERROR a\n2024-05-01T10:00:30Z INFO b\n2024-05-01T10:05:00Z INFO c\n"
+    upload(client, "sparse.log", sparse)
+    hist = client.get("/api/logs/histogram").json()
+    assert hist["bucket"] == "minute"
+    assert [p["total"] for p in hist["points"]] == [2, 0, 0, 0, 0, 1]
+    assert hist["points"][0]["errors"] == 1
+    assert hist["points"][0]["bucket"].startswith("2024-05-01T10:00:00")
+
+
+def test_dashboard_timeline_and_trend_are_zero_filled(client):
+    log = (
+        b"2024-05-01T10:00:00Z ERROR boom\n"
+        b"2024-05-04T10:00:00Z INFO ok\n"
+        b"2024-05-05T09:00:00Z ERROR boom\n"
+    )
+    upload(client, "gaps.log", log)
+    days = client.get("/api/dashboard/timeline", params={"bucket": "day"}).json()
+    assert [p["total"] for p in days] == [1, 0, 0, 1, 1]
+    assert days[0]["bucket"].startswith("2024-05-01")
+    assert [p["errors"] for p in days] == [1, 0, 0, 0, 1]
+    # Window of the last 3 buckets ending at the newest entry.
+    last3 = client.get("/api/dashboard/timeline", params={"bucket": "day", "limit": 3}).json()
+    assert [p["bucket"][:10] for p in last3] == ["2024-05-03", "2024-05-04", "2024-05-05"]
+    assert [p["total"] for p in last3] == [0, 1, 1]
+
+    fp = client.get("/api/errors/groups").json()[0]["fingerprint"]
+    trend = client.get(f"/api/errors/groups/{fp}/trend").json()
+    assert [p["count"] for p in trend] == [1, 0, 0, 0, 1]
+
+
+def test_refingerprint_merges_groups_and_keeps_state(client, db_session):
+    from app.models import ErrorGroupState, LogEntry
+    from app.refingerprint import refingerprint
+
+    upload(client, "a.log", b"2024-05-01T10:00:00Z ERROR boom\n2024-05-01T11:00:00Z ERROR boom\n")
+    # Simulate rows fingerprinted by the old rules: one group per hour.
+    rows = db_session.query(LogEntry).order_by(LogEntry.timestamp).all()
+    rows[0].fingerprint, rows[1].fingerprint = "old-10", "old-11"
+    db_session.add(ErrorGroupState(fingerprint="old-11", status="acknowledged", assignee="ops"))
+    db_session.commit()
+    assert len(client.get("/api/errors/groups").json()) == 2
+
+    scanned, changed = refingerprint(db_session, batch_size=1)
+    assert (scanned, changed) == (2, 2)
+    groups = client.get("/api/errors/groups").json()
+    assert len(groups) == 1 and groups[0]["count"] == 2
+    assert groups[0]["status"] == "acknowledged" and groups[0]["assignee"] == "ops"
+    assert refingerprint(db_session) == (2, 0)  # idempotent
+
+
+def test_like_wildcards_in_filters_are_literal(client):
+    log = (
+        b"2024-05-01T10:00:00Z INFO service:api source:web_1 underscore host\n"
+        b"2024-05-01T10:01:00Z INFO service:api source:web-1 dash host\n"
+        b"2024-05-01T10:02:00Z INFO service:api source:web-2 rate 100% reached\n"
+    )
+    upload(client, "wild.log", log)
+    total = lambda **p: client.get("/api/logs", params=p).json()["total"]  # noqa: E731
+    assert total(source="web_1") == 1
+    assert total(source="%") == 0
+    assert total(q="source:web_1") == 1
+    assert total(q="100%") == 1
+    assert total(q="-source:web_1") == 2
+    assert total(source="WEB") == 3  # still case-insensitive
+
+
+def test_fingerprint_filter_lists_whole_group(client):
+    upload(client, "app.log", PLAIN_LOG)
+    group = next(g for g in client.get("/api/errors/groups").json() if "connection refused" in g["sample"])
+    page = client.get("/api/logs", params={"fingerprint": group["fingerprint"]}).json()
+    assert page["total"] == group["count"] == 2
+    exported = client.get("/api/logs/export", params={"fingerprint": group["fingerprint"]}).text
+    assert len(exported.splitlines()) == 3
+
+
+def test_charts_survive_timestamp_outliers(client):
+    # Year-9999 line: bucket stepping used to overflow -> 500.
+    upload(client, "far.log", b"ERROR token valid until 9999-12-31 23:59:59 expired\n")
+    for bucket in ("day", "hour"):
+        assert client.get("/api/dashboard/timeline", params={"bucket": bucket}).status_code == 200
+    assert client.get("/api/logs/histogram").status_code == 200
+    fp = client.get("/api/errors/groups").json()[0]["fingerprint"]
+    assert client.get(f"/api/errors/groups/{fp}/trend").status_code == 200
+
+    # Real recent data + the future outlier + a 1970 outlier.
+    recent = b"".join(b"2026-11-%02dT10:00:00Z INFO real %d\n" % (d, d) for d in range(1, 11))
+    upload(client, "recent.log", recent)
+    upload(client, "old.jsonl", b'{"timestamp": 0, "msg": "epoch zero"}\n')
+    # Histogram ignores the far-future outlier and keeps the newest buckets,
+    # so the real data stays visible despite the 1970 outlier too.
+    hist = client.get("/api/logs/histogram").json()
+    assert hist["points"][-1]["bucket"].startswith("2026-11")
+    assert sum(p["total"] for p in hist["points"]) == 10
+    # Only future data: still plotted (fallback).
+    assert client.get("/api/logs/histogram", params={"q": "token"}).json()["points"]
+    # Day window ends at the newest non-future entry, not at year 9999.
+    days = client.get("/api/dashboard/timeline", params={"bucket": "day"}).json()
+    assert sum(p["total"] for p in days) == 10
+
+
+def test_offsets_normalised_to_utc_on_store(client):
+    upload(client, "tz.jsonl", b'{"timestamp": "2024-05-01T10:00:00+05:00", "msg": "a"}\n'
+                               b'{"timestamp": "2024-05-01T06:00:00Z", "msg": "b"}\n')
+    items = client.get("/api/logs", params={"sort": "timestamp", "direction": "asc"}).json()["items"]
+    assert [i["message"] for i in items] == ["a", "b"]  # 05:00Z before 06:00Z
+    hit = client.get("/api/logs", params={"date_from": "2024-05-01T04:30:00Z", "date_to": "2024-05-01T05:30:00Z"})
+    assert [i["message"] for i in hit.json()["items"]] == ["a"]
+
+
+def test_refingerprint_state_follows_split_groups(client, db_session):
+    from app.models import ErrorGroupState, LogEntry
+    from app.refingerprint import refingerprint
+
+    upload(client, "s.log", b"ERROR job 1234567 failed\nERROR job abcdef1 failed\n")
+    for row in db_session.query(LogEntry).all():
+        row.fingerprint = "old-merged"  # both normalised to "job <hex> failed" before
+    db_session.add(ErrorGroupState(fingerprint="old-merged", status="muted"))
+    db_session.commit()
+    refingerprint(db_session)
+    groups = client.get("/api/errors/groups").json()
+    assert len(groups) == 2 and {g["status"] for g in groups} == {"muted"}
+
+
+def test_edge_of_range_offsets_do_not_abort_import(client):
+    # .NET DateTime.MinValue with a local offset: UTC conversion overflows.
+    resp = upload(client, "edge.log", b"0001-01-01T00:30:00+01:00 INFO x\n2024-05-01T10:00:00Z INFO good\n")
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["parsed_count"] == 2
+    resp = upload(client, "edge.jsonl", b'{"timestamp": "9999-12-31T23:00:00-05:00", "msg": "y"}\n')
+    assert resp.status_code == 201, resp.text
+
+
+def test_trend_for_group_with_only_future_entries(client):
+    upload(client, "now.log", b"2026-11-01T10:00:00Z INFO present\n")
+    upload(client, "future.log", b"2099-01-01T10:00:00Z ERROR boom\n2099-01-02T10:00:00Z ERROR boom\n")
+    group = client.get("/api/errors/groups").json()[0]
+    trend = client.get(f"/api/errors/groups/{group['fingerprint']}/trend").json()
+    assert sum(p["count"] for p in trend) == group["count"] == 2
+
+
+def test_histogram_only_future_keeps_oldest(client):
+    upload(client, "f.log", b"2099-01-01T10:00:00Z INFO future a\nINFO future b valid until 9999-12-31 23:59:59\n")
+    hist = client.get("/api/logs/histogram", params={"q": "future"}).json()
+    assert hist["points"][0]["bucket"].startswith("2099-01")
+    assert hist["points"][0]["total"] == 1

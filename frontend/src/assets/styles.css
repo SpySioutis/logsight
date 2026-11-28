@@ -134,11 +134,10 @@
   --text-dim: var(--text-2);
   --text-faint: var(--text-3);
   --accent-dim: var(--border-strong);
-  --danger: var(--danger);
   --warn: var(--warning);
   --ok: var(--success);
-  --info: var(--info);
-  --radius: var(--radius);
+  /* Never alias a variable to itself (e.g. --danger: var(--danger)): the
+     cycle makes it invalid everywhere and every var() use falls back. */
 }
 
 /* ---------------------------------- base ---------------------------------- */
@@ -516,6 +515,8 @@ button svg, .btn svg { width: 15px; height: 15px; flex-shrink: 0; }
 button:hover, .btn:hover { border-color: var(--border-strong); background: var(--bg-3); filter: brightness(1.12); }
 button:active, .btn:active { transform: scale(0.97); }
 button:disabled, .btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; filter: none; }
+.btn.disabled { opacity: 0.45; pointer-events: none; }
+a.btn { text-decoration: none; }
 button.primary, .btn.primary {
   background: var(--accent-gradient);
   border-color: transparent;

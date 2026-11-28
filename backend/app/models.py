@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, String, Text
+from sqlalchemy import BigInteger, DateTime, ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
@@ -56,6 +56,8 @@ class LogEntry(Base):
     fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     trace_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     request_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    # Position in the uploaded file (per import); NULL for pre-0007 rows.
+    seq: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     import_: Mapped[Import] = relationship("Import", back_populates="entries")

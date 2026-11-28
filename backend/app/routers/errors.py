@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import ErrorGroupState, LogEntry
+from app.timebuckets import latest_plausible, as_utc, step_back, trunc_expr, truncate, zero_filled
 from app.schemas import ErrorGroup, ErrorGroupStateIn, ErrorGroupStateOut, ErrorTrendPoint, LogEntryOut, LogPage
 
 router = APIRouter(prefix="/errors", tags=["errors"])
@@ -38,7 +37,7 @@ def error_groups(
             status_code=400, detail=f"Invalid status. Use one of: {list(_STATUSES)}."
         )
     severities = list(severity) if severity else list(_ERROR_SEVERITIES)
-    rows = (
+    query = (
         db.query(
             LogEntry.fingerprint,
             func.min(LogEntry.message).label("sample"),
@@ -49,39 +48,57 @@ def error_groups(
         )
         .filter(LogEntry.severity.in_(severities))
         .filter(LogEntry.fingerprint.isnot(None))
-        .group_by(LogEntry.fingerprint)
-        .order_by(func.count(LogEntry.id).desc())
+    )
+    if status is not None:
+        # Filter by lifecycle state in SQL, *before* LIMIT: filtering the
+        # top-N afterwards silently dropped matching groups outside it.
+        # Missing state row means "open".
+        stated = select(ErrorGroupState.fingerprint)
+        if status == "open":
+            query = query.filter(
+                or_(
+                    LogEntry.fingerprint.notin_(stated),
+                    LogEntry.fingerprint.in_(stated.where(ErrorGroupState.status == "open")),
+                )
+            )
+        else:
+            query = query.filter(LogEntry.fingerprint.in_(stated.where(ErrorGroupState.status == status)))
+    rows = (
+        query.group_by(LogEntry.fingerprint)
+        .order_by(func.count(LogEntry.id).desc(), LogEntry.fingerprint)
         .limit(limit)
         .all()
     )
-    states = _states_map(db, [r.fingerprint for r in rows])
+    fingerprints = [r.fingerprint for r in rows if r.fingerprint]
+    states = _states_map(db, fingerprints)
+    # One query for all groups' sources instead of one per group.
+    sources_by_fp: dict[str, list[str]] = {}
+    if fingerprints:
+        source_rows = (
+            db.query(LogEntry.fingerprint, LogEntry.source)
+            .filter(LogEntry.fingerprint.in_(fingerprints))
+            .filter(LogEntry.source.isnot(None))
+            .distinct()
+            .order_by(LogEntry.fingerprint, LogEntry.source)
+            .all()
+        )
+        for fp, src in source_rows:
+            bucket = sources_by_fp.setdefault(fp, [])
+            if len(bucket) < 10:
+                bucket.append(src)
     groups: list[ErrorGroup] = []
     for r in rows:
         state = states.get(r.fingerprint or "")
-        effective_status = state.status if state else "open"
-        if status is not None and effective_status != status:
-            continue
-        sources = [
-            s[0]
-            for s in (
-                db.query(LogEntry.source)
-                .filter(LogEntry.fingerprint == r.fingerprint)
-                .filter(LogEntry.source.isnot(None))
-                .distinct()
-                .limit(10)
-                .all()
-            )
-        ]
         groups.append(
             ErrorGroup(
                 fingerprint=r.fingerprint or "",
                 sample=(r.sample or "")[:280],
                 severity=r.severity,
                 count=r.count,
-                sources=sources,
+                sources=sources_by_fp.get(r.fingerprint or "", []),
                 first_seen=r.first_seen,
                 last_seen=r.last_seen,
-                status=effective_status,
+                status=state.status if state else "open",
                 assignee=state.assignee if state else None,
                 note=state.note if state else None,
             )
@@ -150,27 +167,39 @@ def group_trend(
     limit: int = Query(default=30, ge=1, le=365),
     db: Session = Depends(get_db),
 ) -> list[ErrorTrendPoint]:
+    """Zero-filled occurrence counts for one group.
+
+    The window ends at the newest stored entry overall (not the group's
+    last occurrence), so trailing zeros show that an error stopped.
+    """
     if bucket not in ("hour", "day"):
         bucket = "day"
-    if db.get_bind().dialect.name == "sqlite":
-        pattern = "%Y-%m-%d %H:00" if bucket == "hour" else "%Y-%m-%d"
-        trunc = func.strftime(pattern, LogEntry.timestamp)
-    else:
-        trunc = func.date_trunc(bucket, LogEntry.timestamp)
+    latest = latest_plausible(db)
+    first = as_utc(
+        db.query(func.min(LogEntry.timestamp)).filter(LogEntry.fingerprint == fingerprint).scalar()
+    )
+    if latest is None or first is None:
+        return []
+    end = truncate(latest, bucket)
+    if truncate(first, bucket) > end:
+        # Group only has future-dated entries: window on its own newest one.
+        own_last = as_utc(
+            db.query(func.max(LogEntry.timestamp)).filter(LogEntry.fingerprint == fingerprint).scalar()
+        )
+        end = truncate(own_last or first, bucket)
+    start = max(truncate(first, bucket), step_back(end, bucket, limit - 1))
+    trunc = trunc_expr(db.get_bind().dialect.name, bucket)
     rows = (
         db.query(trunc.label("bucket"), func.count(LogEntry.id).label("count"))
         .filter(LogEntry.fingerprint == fingerprint)
-        .filter(LogEntry.timestamp.isnot(None))
+        .filter(LogEntry.timestamp >= start)
         .group_by(trunc)
-        .order_by(trunc.desc())
-        .limit(limit)
         .all()
     )
-    points = [
-        ErrorTrendPoint(
-            bucket=r.bucket.isoformat() if isinstance(r.bucket, datetime) else str(r.bucket),
-            count=r.count,
-        )
-        for r in rows
+    counts = {key: (r.count, 0) for r in rows if (key := as_utc(r.bucket)) is not None and key <= end}
+    counts.setdefault(start, (0, 0))
+    counts.setdefault(end, (0, 0))
+    return [
+        ErrorTrendPoint(bucket=key.isoformat(), count=count)
+        for key, count, _ in zero_filled(counts, bucket, limit)
     ]
-    return list(reversed(points))

@@ -65,3 +65,25 @@ def test_snippet_without_terms_truncates():
     snippet = highlight_snippet("x" * 500, parsed, max_len=280)
     assert "<mark>" not in snippet
     assert snippet.endswith("…")
+
+
+def test_websearch_text_splits_like_the_index():
+    from app.search import parse_search_query
+
+    # Must mirror migrations/0008: / . @ : are word separators, and a term
+    # that splits into several words becomes a phrase.
+    assert parse_search_query("checkout").websearch_text == "checkout"
+    assert parse_search_query("/api/checkout").websearch_text == '"api checkout"'
+    assert parse_search_query("10.0.0.5").websearch_text == '"10 0 0 5"'
+    assert parse_search_query('-"db.internal down"').websearch_text == '-"db internal down"'
+    assert parse_search_query("/").websearch_text == ""
+
+
+def test_step_back_month_clamps_before_year_one():
+    from datetime import datetime, timezone
+
+    from app.timebuckets import step_back
+
+    floor = datetime.min.replace(tzinfo=timezone.utc)
+    assert step_back(datetime(1, 1, 1, tzinfo=timezone.utc), "month", 1) == floor
+    assert step_back(datetime(2024, 1, 1, tzinfo=timezone.utc), "month", 13) == datetime(2022, 12, 1, tzinfo=timezone.utc)

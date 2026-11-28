@@ -213,7 +213,11 @@ function goBack() {
 }
 
 function openInExplorer() {
-  router.push({ path: '/logs', query: { trace_id: traceId.value } })
+  // /traces/{id} matches trace_id OR request_id: filter by whichever this
+  // id actually is, otherwise a request-id "trace" opens an empty Explorer.
+  const id = traceId.value
+  const isTrace = detail.value?.entries.some((e) => e.trace_id === id) ?? true
+  router.push({ path: '/logs', query: isTrace ? { trace_id: id } : { request_id: id } })
 }
 
 async function copyId() {

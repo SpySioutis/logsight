@@ -6,7 +6,8 @@ Three Docker Compose services (`compose.yaml` at repo root):
 
 - `db` — PostgreSQL 17, persistent `pgdata` volume, `pg_isready` healthcheck.
 - `backend` — built from root `Dockerfile` (uv + FastAPI on :8000). On boot it
-  runs `python -m app.migrate` (versioned SQL in `backend/migrations/`) and
+  runs `python -m app.migrate --recover` (versioned SQL in
+  `backend/migrations/`, then fails imports a crash left `processing`) and
   then uvicorn. Health: `GET /api/health`.
 - `frontend` — built from `frontend/Dockerfile` (node build → nginx serve on
   :80, `/api/` reverse-proxied to `backend:8000`, SPA fallback).
@@ -27,25 +28,27 @@ backend/
     schemas.py         # Pydantic request/response models
     severity.py        # canonical levels + normalize_severity (never discards)
     parsers.py         # streaming plaintext (+syslog/multiline) / JSONL / JSON / CSV parsers
-    grouping.py        # deterministic error fingerprinting
+    grouping.py        # deterministic error fingerprinting (timestamps/IPs/ids masked)
+    refingerprint.py   # `python -m app.refingerprint`: recompute stored fingerprints after rule changes
+    timebuckets.py     # portable date_trunc/strftime bucketing + zero-filling for charts
     search.py          # q-language parser, ILIKE fallback, snippet highlighting
     import_service.py  # upload → temp file + hash → parse (+gzip/zip) → COPY bulk load + progress heartbeats
-    migrate.py         # applies backend/migrations/*.sql once each
+    migrate.py         # applies backend/migrations/*.sql once each; `--recover` (container boot only) fails interrupted imports
     routers/           # health, imports, logs, dashboard, errors, filters, traces
-  migrations/0001_initial.sql … 0005_error_states.sql
+  migrations/0001_initial.sql … 0008_search_split_tokens.sql
   tests/               # pytest (SQLite override in conftest.py)
 frontend/
   src/
-    api/client.ts      # axios instance + types + toParams()
+    api/client.ts      # axios instance + types + toParams() / apiParams() / exportUrl()
     utils/             # severity.ts, format.ts, highlight.ts (+ vitest files)
     stores/settings.ts # Pinia: theme + page size (localStorage)
     components/        # AppIcon, SeverityBadge, StatusBadge, FilterBar, LogTable,
                        # LogDetails, Pagination, StatCard, TimeChart, TrendSpark,
-                       # EmptyState, PageHeader, TableSkeleton
+                       # HistogramBars, EmptyState, PageHeader, TableSkeleton
     views/             # Dashboard, Explorer, Errors, Traces, Imports, SavedFilters, Settings, TraceView
     router/index.ts
 samples/               # app.log, app.jsonl, structured.json, events.csv,
-                       # syslog.log, trace.jsonl (manual testing)
+                       # syslog.log, trace.jsonl, access.log (manual testing)
 ```
 
 ## Technology stack (preferred stack — do not change without user approval)
@@ -61,9 +64,13 @@ framework, database or AI service may be introduced silently.
   stream and never raise on bad line content (per-line `ValueError` only for
   malformed JSONL/JSON).
 - Search: `q` goes through `search.py` (`parse_search_query`); PostgreSQL uses
-  the `ix_log_entries_search` expression GIN index (byte-identical expression
-  in `routers/logs.py`), SQLite uses the `ILIKE` emulation so tests stay
+  the `ix_log_entries_search` expression GIN index (identical expression in
+  `routers/logs.py` and `migrations/0008_search_split_tokens.sql`; the index
+  text has `/ . @ :` translated to spaces and `ParsedQuery.websearch_text`
+  applies the same split, so words inside paths/e-mails/hosts/IPs match), SQLite uses the `ILIKE` emulation so tests stay
   portable. Snippets are HTML-escaped Python-side with `<mark>` hits only.
+  Substring matches go through `search.contains_ci()` (escapes `%`/`_`,
+  single bound `ILIKE` pattern) — never build `ilike(f"%{value}%")`.
   PG free-text matching runs in an `id IN (SELECT … OFFSET 0)` subquery — the
   OFFSET is load-bearing (blocks a catastrophic plan flattening); verify with
   EXPLAIN on a large table before touching it.
@@ -76,7 +83,18 @@ framework, database or AI service may be introduced silently.
 - Severity handling: always go through `normalize_severity`; store canonical
   values; `UNKNOWN` is a valid stored value, never an error.
 - Error grouping: deterministic `fingerprint()` in `grouping.py` only. No
-  external AI/clustering APIs.
+  external AI/clustering APIs. Changing normalisation rules changes stored
+  fingerprints: mention `python -m app.refingerprint` in the release notes.
+- Time charts: bucket via `app/timebuckets.py` and zero-fill empty buckets so
+  x axes stay linear in time (never return only non-empty buckets). Keep the
+  newest buckets when capping, and ignore far-future timestamps (beyond
+  now + 1 day) for chart ranges/windows (`latest_plausible()`): one
+  mis-parsed date must not hide real data.
+- Dates from the UI: `datetime-local` values are the user's local time.
+  UI state and URLs keep that form; API calls go through `apiParams()`, which
+  converts them to UTC ISO instants. Never send raw `datetime-local` values.
+- CSS variables: never alias a custom property to itself
+  (`--x: var(--x)` is a cycle and invalidates it app-wide).
 
 ## Dependency management
 
@@ -100,11 +118,11 @@ cd frontend && npm test && npm run build
 
 ## Testing commands
 
-- `cd backend && uv run pytest -q` — 54 tests. API tests use an isolated
+- `cd backend && uv run pytest -q` — 88 tests. API tests use an isolated
   in-memory SQLite DB (`tests/conftest.py`); SQLite-only branches (e.g.
   `strftime` timeline bucketing, `ILIKE` search) exist solely to keep these
   tests portable.
-- `cd frontend && npm test` — 12 vitest tests.
+- `cd frontend && npm test` — 18 vitest tests.
 
 Never claim tests pass without running them in-session.
 
@@ -132,7 +150,14 @@ Never claim tests pass without running them in-session.
 - Explorer filtering/sorting/pagination is server-side; validate `sort`
   (incl. `relevance`), `direction`, `severity` and error `status` with 400s,
   never 500s. Page cap: 500 rows. `sort=relevance` falls back to newest-first
-  when there is no `q` or no tsvector (SQLite).
+  when there is no `q` or no tsvector (SQLite). `/logs`, `/logs/export` and
+  `/logs/histogram` share the `log_filters` dependency — add new filters
+  there so all three stay consistent. Export streams one query via
+  `yield_per` (no OFFSET re-querying), capped at 100,000 rows, with CSV cells
+  starting with `= + - @` prefixed by `'` (formula injection).
+- Failed imports never keep partial rows (`_mark_failed()` deletes them);
+  imports left `processing` by a crash are failed at boot (only via
+  `migrate --recover`; a manual `python -m app.migrate` never touches imports).
 - Upload: extension allowlist (`.log .txt .jsonl .ndjson .json .csv`, plus
   `.gz` / `.zip`) + `MAX_UPLOAD_MB` cap (413) applied to raw and decompressed
   bytes, content-hash duplicate detection (`status: "duplicate"`, no

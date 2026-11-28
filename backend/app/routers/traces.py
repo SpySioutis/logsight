@@ -37,41 +37,40 @@ def list_traces(
         .limit(limit)
         .all()
     )
-    summaries: list[TraceSummary] = []
-    for r in rows:
-        services = [
-            s[0]
-            for s in (
-                db.query(LogEntry.service)
-                .filter(LogEntry.trace_id == r.trace_id)
-                .filter(LogEntry.service.isnot(None))
-                .distinct()
-                .limit(10)
-                .all()
-            )
-        ]
-        severities = sorted(
-            {
-                s[0]
-                for s in (
-                    db.query(LogEntry.severity)
-                    .filter(LogEntry.trace_id == r.trace_id)
-                    .distinct()
-                    .all()
-                )
-            }
+    trace_ids = [r.trace_id for r in rows if r.trace_id]
+    # Two batched queries for all traces instead of two per trace.
+    services: dict[str, list[str]] = {}
+    severities: dict[str, set[str]] = {}
+    if trace_ids:
+        for tid, service in (
+            db.query(LogEntry.trace_id, LogEntry.service)
+            .filter(LogEntry.trace_id.in_(trace_ids))
+            .filter(LogEntry.service.isnot(None))
+            .distinct()
+            .order_by(LogEntry.trace_id, LogEntry.service)
+            .all()
+        ):
+            bucket = services.setdefault(tid, [])
+            if len(bucket) < 10:
+                bucket.append(service)
+        for tid, severity in (
+            db.query(LogEntry.trace_id, LogEntry.severity)
+            .filter(LogEntry.trace_id.in_(trace_ids))
+            .distinct()
+            .all()
+        ):
+            severities.setdefault(tid, set()).add(severity)
+    return [
+        TraceSummary(
+            trace_id=r.trace_id or "",
+            count=r.count,
+            services=services.get(r.trace_id or "", []),
+            severities=sorted(severities.get(r.trace_id or "", set())),
+            first_seen=r.first_seen,
+            last_seen=r.last_seen,
         )
-        summaries.append(
-            TraceSummary(
-                trace_id=r.trace_id or "",
-                count=r.count,
-                services=services,
-                severities=severities,
-                first_seen=r.first_seen,
-                last_seen=r.last_seen,
-            )
-        )
-    return summaries
+        for r in rows
+    ]
 
 
 @router.get("/{trace_id}", response_model=TraceDetail)

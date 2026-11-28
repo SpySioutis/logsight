@@ -23,11 +23,11 @@ See [MANUAL.md](MANUAL.md) for manual startup, configuration, migrations, testin
 
 ## Features
 
-- **Log import** — plain text (`.log`, `.txt`, incl. RFC 5424 syslog and multiline stacktraces), JSON Lines (`.jsonl`, `.ndjson`), structured JSON (`.json`) and CSV (`.csv`); gzip (`.gz`) and bundles (`.zip`) accepted; streaming parse, PostgreSQL COPY bulk load, 1 GB default limit (raw + decompressed), live progress percentage, duplicate detection by content hash, import history.
-- **Log explorer** — server-side pagination, sorting (incl. relevance ranking), full-text search with operators (`"exact phrase"`, `-exclude`, `service:`, `source:`, `severity:`, `trace:`, `request:`), highlighted snippets, date-range, severity, source, service, trace and request filters (combinable), log details drawer with copy-to-clipboard and trace links.
+- **Log import** — plain text (`.log`, `.txt`, incl. RFC 5424 syslog, nginx/Apache access and error logs, and multiline stacktraces), JSON Lines (`.jsonl`, `.ndjson`), structured JSON (`.json`) and CSV (`.csv`); gzip (`.gz`) and bundles (`.zip`) accepted; streaming parse, PostgreSQL COPY bulk load, 1 GB default limit (raw + decompressed), live progress percentage, duplicate detection by content hash, several files per upload (queued), import history; timestamps keep their UTC offset; a failed or interrupted import never leaves partial data.
+- **Log explorer** — server-side pagination, sorting (incl. relevance ranking), full-text search with operators (`"exact phrase"`, `-exclude`, `service:`, `source:`, `severity:`, `trace:`, `request:`), highlighted snippets, date-range, severity, source, service, trace and request filters (combinable, shareable via URL), a volume histogram of the current result set (click a bar to zoom into that period), CSV / JSONL export of all matching entries (up to 100,000), log details drawer with surrounding lines from the original file, one-click filter by service / source / import / error group, copy-to-clipboard and trace links.
 - **Severity normalization** — TRACE / DEBUG / INFO / WARN / WARNING / ERROR / FATAL / CRITICAL / UNKNOWN. Aliases (`warn`, `err`, `crit`, numeric levels…) are normalized; unknown values become UNKNOWN and are never discarded.
-- **Dashboard** — totals, errors, warnings, criticals, logs over time, severity distribution, most active sources, most frequent errors (muted groups excluded). Empty states when nothing is imported.
-- **Error analysis** — deterministic fingerprint grouping (masks IPs, UUIDs, numbers, hex ids), counts, first/last occurrence, per-group trend sparkline, lifecycle status (open/acknowledged/resolved/muted) with assignee and note, drill-down to matching entries.
+- **Dashboard** — totals, errors, warnings, criticals, logs over time (all data with adaptive buckets, or the last 60 days / hours; empty periods shown as zero), severity distribution, most active sources, most frequent errors (muted groups excluded). Empty states when nothing is imported.
+- **Error analysis** — deterministic fingerprint grouping (masks timestamps, IPs, UUIDs, numbers, hex ids), counts, first/last occurrence, per-group trend sparkline, lifecycle status (open/acknowledged/resolved/muted) with assignee and note, drill-down to matching entries, "Open in Explorer" for the whole group.
 - **Trace correlation** — `trace_id` / `request_id` extracted at import; traces overview page plus a per-trace waterfall timeline across services with duration, services and severities.
 - **Saved filters** — create, edit, delete and re-apply search presets.
 - **Modern observability UI** — dark-first Vue 3 + TypeScript SPA with collapsible sidebar navigation, KPI dashboard, smooth charts, loading skeletons and full light-theme support.
@@ -49,7 +49,7 @@ logsight/
 │   ├── app/               # config, database, models, schemas, severity,
 │   │   │                  # parsers, grouping, search, import_service, migrate, main
 │   │   └── routers/       # health, imports, logs, dashboard, errors, filters, traces
-│   ├── migrations/        # versioned SQL (0001_initial … 0005_error_states)
+│   ├── migrations/        # versioned SQL (0001_initial … 0008_search_split_tokens)
 │   └── tests/             # pytest: severity, parsers, grouping, search, API
 ├── frontend/              # Vue 3 + TS SPA (npm)
 │   └── src/               # views, components, api client, stores, utils
@@ -80,7 +80,7 @@ Base path `/api`. Full reference with schemas at `/api/docs` (Swagger UI).
 
 - `GET /api/health`
 - `POST /api/imports/upload` · `GET /api/imports` · `GET /api/imports/{id}` · `DELETE /api/imports/{id}`
-- `GET /api/logs` (q with `"phrase" -exclude field:value` operators, severity[], source, service, import_id, trace_id, request_id, date_from, date_to, sort incl. `relevance`, direction, page, page_size) · `GET /api/logs/{id}` · `GET /api/logs/meta/facets`
+- `GET /api/logs` (q with `"phrase" -exclude field:value` operators, severity[], source, service, import_id, trace_id, request_id, fingerprint, date_from, date_to, sort incl. `relevance`, direction, page, page_size) · `GET /api/logs/export` (same filters, `format=csv|jsonl`) · `GET /api/logs/histogram` (same filters) · `GET /api/logs/{id}` · `GET /api/logs/{id}/context` · `GET /api/logs/meta/facets`
 - `GET /api/dashboard/summary|timeline|severity-distribution|top-sources|top-errors`
 - `GET /api/errors/groups` (`status` filter) · `GET /api/errors/groups/{fingerprint}` · `PUT /api/errors/groups/{fingerprint}/state` · `GET /api/errors/groups/{fingerprint}/trend`
 - `GET /api/traces` · `GET /api/traces/{id}`
@@ -89,8 +89,8 @@ Base path `/api`. Full reference with schemas at `/api/docs` (Swagger UI).
 ## Tests
 
 ```sh
-cd backend && uv run pytest -q        # 54 tests: unit + API integration (SQLite)
-cd frontend && npm test               # 12 vitest tests
+cd backend && uv run pytest -q        # 88 tests: unit + API integration (SQLite)
+cd frontend && npm test               # 18 vitest tests
 ```
 
 Documented in MANUAL.md; a full Docker validation is described there too.
@@ -99,7 +99,7 @@ Documented in MANUAL.md; a full Docker validation is described there too.
 
 - Imports are processed synchronously in the upload request (no background worker yet); very large files take as long as the HTTP request lasts. Upload progress is shown in the UI.
 - A single-document `.json` file must fit within the upload size limit (it is parsed as one document; `.jsonl` streams line-by-line instead). The same limit caps decompressed `.gz` / `.zip` output.
-- Full-text search uses an expression GIN index with stemming + `ts_rank` on PostgreSQL; the test suite emulates it with `ILIKE` on SQLite.
+- Full-text search uses an expression GIN index with stemming + `ts_rank` on PostgreSQL (words inside paths, e-mails, hostnames and IPs are indexed separately); the test suite emulates it with `ILIKE` on SQLite. A term that matches nearly every row is slow on multi-million-row tables.
 - Error grouping is deterministic fingerprinting, not semantic clustering.
 - No authentication/multi-user support in this version — run behind your own access control if exposed.
 

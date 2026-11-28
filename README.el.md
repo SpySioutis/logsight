@@ -27,30 +27,39 @@ migrations, δοκιμές και αντιμετώπιση προβλημάτω�
 
 ## Δυνατότητες
 
-- **Εισαγωγή logs** — απλό κείμενο (`.log`, `.txt`, συμπ. syslog RFC 5424 και
-  πολυγραμμικά stacktraces), JSON Lines (`.jsonl`, `.ndjson`), δομημένο JSON
+- **Εισαγωγή logs** — απλό κείμενο (`.log`, `.txt`, συμπ. syslog RFC 5424, access/error
+  logs nginx/Apache και πολυγραμμικά stacktraces), JSON Lines (`.jsonl`, `.ndjson`), δομημένο JSON
   (`.json`) και CSV (`.csv`)· γίνονται δεκτά gzip (`.gz`) και πακέτα (`.zip`)·
   ανάλυση με ροή (streaming), μαζική φόρτωση μέσω COPY (PostgreSQL),
   ζωντανό ποσοστό προόδου, όριο 1 GB (προεπιλογή, για
   πρωτογενές και αποσυμπιεσμένο μέγεθος), ανίχνευση
-  διπλότυπων μέσω hash περιεχομένου, ιστορικό εισαγωγών.
+  διπλότυπων μέσω hash περιεχομένου, πολλά αρχεία ανά upload (σε ουρά),
+  ιστορικό εισαγωγών· οι χρονοσφραγίδες κρατούν τη διαφορά ώρας (offset) τους
+  και μια αποτυχημένη ή διακοπτόμενη εισαγωγή δεν αφήνει ποτέ μισά δεδομένα.
 - **Εξερεύνηση logs** — σελιδοποίηση από τον server, ταξινόμηση (συμπ.
   κατάταξης συνάφειας), αναζήτηση πλήρους κειμένου με τελεστές
   (`"ακριβής φράση"`, `-εξαίρεση`, `service:`, `source:`, `severity:`,
   `trace:`, `request:`), επισημασμένα αποσπάσματα, φίλτρα εύρους ημερομηνιών,
-  σοβαρότητας, πηγής, υπηρεσίας, trace και request (συνδυαστικά), προβολή
-  λεπτομερειών εγγραφής με αντιγραφή στο πρόχειρο και συνδέσμους trace.
+  σοβαρότητας, πηγής, υπηρεσίας, trace και request (συνδυαστικά, κοινοποιήσιμα
+  μέσω URL), ιστόγραμμα όγκου των τρεχόντων αποτελεσμάτων (κλικ σε μπάρα για
+  εστίαση σε εκείνο το διάστημα), εξαγωγή όλων των αποτελεσμάτων σε CSV / JSONL
+  (έως 100.000), προβολή λεπτομερειών εγγραφής με τις γειτονικές γραμμές του
+  αρχικού αρχείου, φιλτράρισμα με ένα κλικ ανά υπηρεσία / πηγή / εισαγωγή /
+  ομάδα σφάλματος, αντιγραφή στο πρόχειρο και συνδέσμους trace.
 - **Κανονικοποίηση σοβαρότητας** — TRACE / DEBUG / INFO / WARN / WARNING /
   ERROR / FATAL / CRITICAL / UNKNOWN. Τα συνώνυμα (`warn`, `err`, `crit`,
   αριθμητικά επίπεδα…) κανονικοποιούνται· οι άγνωστες τιμές γίνονται UNKNOWN
   και δεν απορρίπτονται ποτέ.
-- **Dashboard** — σύνολα, σφάλματα, προειδοποιήσεις, κρίσιμα, logs στον χρόνο,
+- **Dashboard** — σύνολα, σφάλματα, προειδοποιήσεις, κρίσιμα, logs στον χρόνο
+  (όλα τα δεδομένα με προσαρμοστικά διαστήματα ή οι τελευταίες 60 ημέρες /
+  ώρες· τα κενά διαστήματα φαίνονται ως μηδέν),
   κατανομή σοβαρότητας, πιο ενεργές πηγές, συχνότερα σφάλματα (χωρίς τις
   σιγασμένες ομάδες). Καταστάσεις κενού περιεχομένου όταν δεν έχουν εισαχθεί logs.
 - **Ανάλυση σφαλμάτων** — ντετερμινιστική ομαδοποίηση με δακτυλικό αποτύπωμα
-  (αποκρύπτονται IPs, UUIDs, αριθμοί, hex ids), μετρήσεις, πρώτη/τελευταία
+  (αποκρύπτονται χρονοσφραγίδες, IPs, UUIDs, αριθμοί, hex ids), μετρήσεις, πρώτη/τελευταία
   εμφάνιση, γραφική τάση ανά ομάδα, κύκλος ζωής (open/acknowledged/resolved/
-  muted) με ανάθεση και σημείωση, πλοήγηση στις αντίστοιχες εγγραφές.
+  muted) με ανάθεση και σημείωση, πλοήγηση στις αντίστοιχες εγγραφές και
+  άνοιγμα όλης της ομάδας στον Explorer.
 - **Συσχέτιση traces** — τα `trace_id` / `request_id` εξάγονται κατά την
   εισαγωγή· σελίδα επισκόπησης traces και χρονολόγιο-waterfall ανά trace
   ανάμεσα σε υπηρεσίες με διάρκεια, υπηρεσίες και σοβαρότητες.
@@ -77,7 +86,7 @@ logsight/
 │   ├── app/               # config, database, models, schemas, severity,
 │   │   │                  # parsers, grouping, search, import_service, migrate, main
 │   │   └── routers/       # health, imports, logs, dashboard, errors, filters, traces
-│   ├── migrations/        # versioned SQL (0001_initial … 0005_error_states)
+│   ├── migrations/        # versioned SQL (0001_initial … 0008_search_split_tokens)
 │   └── tests/             # pytest: severity, parsers, grouping, search, API
 ├── frontend/              # SPA σε Vue 3 + TS (npm)
 │   └── src/               # views, components, api client, stores, utils
@@ -108,7 +117,7 @@ logsight/
 
 - `GET /api/health`
 - `POST /api/imports/upload` · `GET /api/imports` · `GET /api/imports/{id}` · `DELETE /api/imports/{id}`
-- `GET /api/logs` (q με τελεστές `"φράση" -εξαίρεση field:value`, severity[], source, service, import_id, trace_id, request_id, date_from, date_to, sort συμπ. `relevance`, direction, page, page_size) · `GET /api/logs/{id}` · `GET /api/logs/meta/facets`
+- `GET /api/logs` (q με τελεστές `"φράση" -εξαίρεση field:value`, severity[], source, service, import_id, trace_id, request_id, fingerprint, date_from, date_to, sort συμπ. `relevance`, direction, page, page_size) · `GET /api/logs/export` (ίδια φίλτρα, `format=csv|jsonl`) · `GET /api/logs/histogram` (ίδια φίλτρα) · `GET /api/logs/{id}` · `GET /api/logs/{id}/context` · `GET /api/logs/meta/facets`
 - `GET /api/dashboard/summary|timeline|severity-distribution|top-sources|top-errors`
 - `GET /api/errors/groups` (φίλτρο `status`) · `GET /api/errors/groups/{fingerprint}` · `PUT /api/errors/groups/{fingerprint}/state` · `GET /api/errors/groups/{fingerprint}/trend`
 - `GET /api/traces` · `GET /api/traces/{id}`
@@ -117,8 +126,8 @@ logsight/
 ## Δοκιμές
 
 ```sh
-cd backend && uv run pytest -q        # 54 δοκιμές: unit + API integration (SQLite)
-cd frontend && npm test               # 12 δοκιμές vitest
+cd backend && uv run pytest -q        # 88 δοκιμές: unit + API integration (SQLite)
+cd frontend && npm test               # 18 δοκιμές vitest
 ```
 
 Αναλυτικά στο MANUAL.md· εκεί περιγράφεται και η πλήρης validation με Docker.
@@ -132,8 +141,10 @@ cd frontend && npm test               # 12 δοκιμές vitest
   upload (το `.jsonl` αναλύεται γραμμή-γραμμή). Το ίδιο όριο καλύπτει το
   αποσυμπιεσμένο περιεχόμενο `.gz` / `.zip`.
 - Η αναζήτηση πλήρους κειμένου χρησιμοποιεί εκφραστικό (expression) GIN index
-  με stemming + `ts_rank` στο PostgreSQL· η σουίτα δοκιμών την εξομοιώνει με
-  `ILIKE` στο SQLite.
+  με stemming + `ts_rank` στο PostgreSQL (οι λέξεις μέσα σε διαδρομές, e-mail,
+  hostnames και IPs αναζητούνται ξεχωριστά)· η σουίτα δοκιμών την εξομοιώνει
+  με `ILIKE` στο SQLite. Ένας όρος που ταιριάζει σχεδόν σε κάθε γραμμή είναι
+  αργός σε πίνακες πολλών εκατομμυρίων γραμμών.
 - Η ομαδοποίηση σφαλμάτων είναι ντετερμινιστική (fingerprint), όχι σημασιολογική.
 - Χωρίς authentication/multi-user σε αυτή την έκδοση — χρησιμοποιήστε δικό σας
   έλεγχο πρόσβασης αν το εκθέσετε.
